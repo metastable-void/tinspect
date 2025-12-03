@@ -508,7 +508,8 @@ fn cast_ws_stream<S: 'static, T: 'static>(ws: WebSocketStream<T>) -> WebSocketSt
     unsafe { std::ptr::read((&*ws as *const WebSocketStream<T>).cast::<WebSocketStream<S>>()) }
 }
 
-enum UpstreamTransport {
+#[derive(Debug, Clone)]
+pub(crate) enum UpstreamTransport {
     Plain,
     Tls(ServerName<'static>),
 }
@@ -729,24 +730,34 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     Ok(())
 }
 
-pub async fn build_client(
+pub(crate) async fn build_client(
     remote_addr: SocketAddr,
+    transport: UpstreamTransport,
 ) -> std::io::Result<hyper::client::conn::http1::SendRequest<Full<Bytes>>> {
     let stream = TcpStream::connect(remote_addr).await?;
-    let io = TokioIo::new(stream);
+    match transport {
+        UpstreamTransport::Plain => {
+            let io = TokioIo::new(stream);
+                    
+            let (sender, conn) = hyper::client::conn::http1::handshake(io)
+                .await
+                .map_err(|e| std::io::Error::other(e))?;
 
-    let (sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| std::io::Error::other(e))?;
+            // Spawn a task to poll the connection, driving the HTTP state
+            tokio::task::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!("Connection failed: {:?}", err);
+                }
+            });
 
-    // Spawn a task to poll the connection, driving the HTTP state
-    tokio::task::spawn(async move {
-        if let Err(err) = conn.await {
-            error!("Connection failed: {:?}", err);
+            Ok(sender)
+        },
+
+        UpstreamTransport::Tls(server_name) => {
+            unimplemented!()
         }
-    });
+    }
 
-    Ok(sender)
 }
 
 pub async fn req_into_full_bytes(
@@ -820,7 +831,7 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     if is_tls {
         unimplemented!();
     } else {
-        let mut client = match build_client(sockinfo.server_addr).await {
+        let mut client = match build_client(sockinfo.server_addr, UpstreamTransport::Plain).await {
             Err(_e) => {
                 let res = Response::builder()
                     .status(400)
