@@ -1,6 +1,6 @@
-pub use crate::tproxy::WebSocketContext;
 pub use crate::tproxy::HttpContext;
-pub use http_body_util::{Full, Empty};
+pub use crate::tproxy::WebSocketContext;
+pub use http_body_util::{Empty, Full};
 pub use hyper::body::Bytes;
 
 use std::fmt::Debug;
@@ -21,10 +21,14 @@ pub type FullResponse = hyper::Response<Full<Bytes>>;
 
 pub trait HttpInspector: Debug + Send + Sync + 'static {
     /// returns a request that is sent to the server.
-    /// 
+    ///
     /// - `Ok(req)`: the request is sent to the server.
     /// - `Err(res)`: returns the response to the client, not making a request to the server.
-    fn inspect_request(&self, req: FullRequest, ctx: HttpContext) -> Result<FullRequest, FullResponse>;
+    fn inspect_request(
+        &self,
+        req: FullRequest,
+        ctx: HttpContext,
+    ) -> Result<FullRequest, FullResponse>;
 
     /// returns a response that is sent back to the client.
     fn inspect_response(&self, res: FullResponse, ctx: HttpContext) -> FullResponse;
@@ -32,12 +36,20 @@ pub trait HttpInspector: Debug + Send + Sync + 'static {
 
 pub trait WebSocketInspector: Debug + Send + Sync + 'static {
     /// returns a WebSocket message sent to the client.
-    /// 
+    ///
     /// return None to drop the message.
-    fn inspect_client_msg(&self, msg: WebSocketMessage, ctx: WebSocketContext) -> Option<WebSocketMessage>;
+    fn inspect_client_msg(
+        &self,
+        msg: WebSocketMessage,
+        ctx: WebSocketContext,
+    ) -> Option<WebSocketMessage>;
 
     /// returns a WebSocket message sent to the server.
-    /// 
+    ///
     /// return None to drop the message.
-    fn inspect_server_msg(&self, msg: WebSocketMessage, ctx: WebSocketContext) -> Option<WebSocketMessage>;
+    fn inspect_server_msg(
+        &self,
+        msg: WebSocketMessage,
+        ctx: WebSocketContext,
+    ) -> Option<WebSocketMessage>;
 }

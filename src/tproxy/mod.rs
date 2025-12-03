@@ -1,33 +1,36 @@
 use socket2::{Domain, Protocol, Socket, Type};
+use std::convert::Infallible;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::AsRawFd;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncRead, AsyncWrite};
-use std::convert::Infallible;
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::{TcpListener, TcpStream};
 
 use tracing::error;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
-use http_body_util::{Full, Empty};
+use http_body_util::{Empty, Full};
 use hyper::body::Bytes;
+use hyper::header::{CONNECTION, UPGRADE};
 use hyper::service::service_fn;
+use hyper::upgrade;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
-use hyper::header::{CONNECTION, UPGRADE};
-use sha1::{Sha1, Digest};
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
-use hyper::upgrade;
-use tokio_tungstenite::WebSocketStream;
+use sha1::{Digest, Sha1};
+use tokio::time::{Duration, interval};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::client::Response as WsClientResponse;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use futures_util::{StreamExt, SinkExt};
-use tokio::time::{interval, Duration};
 use tokio_tungstenite::tungstenite::protocol::frame::Utf8Bytes;
+use tokio_tungstenite::{WebSocketStream, client_async};
 
+use crate::inspect::{
+    EmptyRequest, FullRequest, FullResponse, HttpInspector, WebSocketInspector, WebSocketMessage,
+};
 use crate::packet::SocketInfo;
-use crate::inspect::{EmptyRequest, FullRequest, FullResponse, HttpInspector, WebSocketInspector, WebSocketMessage};
 
 #[derive(Debug, Clone)]
 pub struct ProxyState {
@@ -41,26 +44,39 @@ impl ProxyState {
         websocket_inspector: Option<W>,
     ) -> Self {
         Self {
-            websocket_inspector: websocket_inspector.map(|w| Arc::new(w ) as Arc<dyn WebSocketInspector>),
+            websocket_inspector: websocket_inspector
+                .map(|w| Arc::new(w) as Arc<dyn WebSocketInspector>),
             http_inspector: http_inspector.map(|h| Arc::new(h) as Arc<dyn HttpInspector>),
         }
     }
 
-    pub fn process_websocket_client_msg(&self, msg: WebSocketMessage, ctx: WebSocketContext) -> Option<WebSocketMessage> {
+    pub fn process_websocket_client_msg(
+        &self,
+        msg: WebSocketMessage,
+        ctx: WebSocketContext,
+    ) -> Option<WebSocketMessage> {
         match self.websocket_inspector.clone() {
             None => Some(msg),
             Some(i) => i.inspect_client_msg(msg, ctx),
         }
     }
 
-    pub fn process_websocket_server_msg(&self, msg: WebSocketMessage, ctx: WebSocketContext) -> Option<WebSocketMessage> {
+    pub fn process_websocket_server_msg(
+        &self,
+        msg: WebSocketMessage,
+        ctx: WebSocketContext,
+    ) -> Option<WebSocketMessage> {
         match self.websocket_inspector.clone() {
             None => Some(msg),
             Some(i) => i.inspect_server_msg(msg, ctx),
         }
     }
 
-    pub fn process_http_request(&self, req: FullRequest, ctx: HttpContext) -> Result<FullRequest, FullResponse> {
+    pub fn process_http_request(
+        &self,
+        req: FullRequest,
+        ctx: HttpContext,
+    ) -> Result<FullRequest, FullResponse> {
         match self.http_inspector.clone() {
             None => Ok(req),
             Some(i) => i.inspect_request(req, ctx),
@@ -273,7 +289,6 @@ pub fn is_ws_upgrade(req: &Request<hyper::body::Incoming>) -> bool {
 pub fn ws_handshake_response(
     req: &Request<hyper::body::Incoming>,
 ) -> Option<Response<Full<Bytes>>> {
-
     const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     let key = req.headers().get("Sec-WebSocket-Key")?.as_bytes();
@@ -292,17 +307,45 @@ pub fn ws_handshake_response(
     Some(resp.body(Full::new(Bytes::new())).ok()?)
 }
 
+fn into_full_response(res: WsClientResponse) -> FullResponse {
+    let (parts, body) = res.into_parts();
+    let bytes = body.unwrap_or_default();
+    Response::from_parts(parts, Full::new(Bytes::from(bytes)))
+}
+
 /// returns a pair of upgrade response headers and WebSocketStream
-/// 
+///
 /// TODO: handle both ws:// and wss:// in the future
-pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(req: FullRequest, sockinfo: SocketInfo) -> std::io::Result<(FullResponse, WebSocketStream<S>)> {
-    if is_plain_tcp::<S>() {
-        // TODO: implement this
-        unimplemented!();
-    } else {
+pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    req: FullRequest,
+    sockinfo: SocketInfo,
+) -> std::io::Result<(FullResponse, WebSocketStream<S>)> {
+    if !is_plain_tcp::<S>() {
         // implement later maybe
         unimplemented!();
     }
+
+    let remote_addr = sockinfo.server_addr;
+    let ws_req = req.map(|_| ());
+    let stream = TcpStream::connect(remote_addr).await?;
+
+    let (ws_raw, res) = client_async(ws_req, stream)
+        .await
+        .map_err(|e| std::io::Error::other(e))?;
+
+    let res = into_full_response(res);
+
+    // SAFETY: the only supported downstream type is `TcpStream`, ensured by the early return above.
+    let ws_stream = {
+        let ws = std::mem::ManuallyDrop::new(ws_raw);
+        unsafe {
+            debug_assert!(is_plain_tcp::<S>());
+            let ptr = (&*ws as *const WebSocketStream<TcpStream>) as *const WebSocketStream<S>;
+            ptr.read()
+        }
+    };
+
+    Ok((res, ws_stream))
 }
 
 pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
@@ -310,21 +353,21 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     sockinfo: SocketInfo,
     state: ProxyState,
 ) -> std::io::Result<()> {
-    let req = req_into_full_bytes(req).await
+    let req = req_into_full_bytes(req)
+        .await
         .map_err(|e| std::io::Error::other(e))?;
 
     // Upgrade to raw TCP stream
-    let upgraded = upgrade::on(req.clone()).await.map_err(|_e| std::io::Error::other("Upgrade error"))?
-        .downcast::<TokioIo<S>>().map_err(|_e| std::io::Error::other("Upgrade downcast error"))?
-        .io.into_inner();
+    let upgraded = upgrade::on(req.clone())
+        .await
+        .map_err(|_e| std::io::Error::other("Upgrade error"))?
+        .downcast::<TokioIo<S>>()
+        .map_err(|_e| std::io::Error::other("Upgrade downcast error"))?
+        .io
+        .into_inner();
 
     // Wrap with tungstenite
-    let mut ws = WebSocketStream::from_raw_socket(
-        upgraded,
-        Role::Server,
-        None
-    )
-    .await;
+    let mut ws = WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
 
     // create server-bound websocket
     let (res, mut ws_upstream) = create_upstream_ws::<S>(req.clone(), sockinfo).await?;
@@ -334,7 +377,7 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
     let (tx_server, mut rx_server) = tokio::sync::mpsc::unbounded_channel();
     let (tx_client, mut rx_client) = tokio::sync::mpsc::unbounded_channel();
-    
+
     let ctx = WebSocketContext {
         is_tls,
         upgrade_req: Arc::new(req),
@@ -351,9 +394,7 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                 let b = Bytes::from(t.into_bytes());
 
                 // safety: b is originaly String
-                let t = unsafe {
-                    Utf8Bytes::from_bytes_unchecked(b)
-                };
+                let t = unsafe { Utf8Bytes::from_bytes_unchecked(b) };
                 Message::Text(t)
             }
         }
@@ -446,7 +487,7 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     ws.close(None).await.map_err(|e| std::io::Error::other(e))?;
                     break;
                 }
-          
+
                 match msg {
                     Message::Text(t) => {
                         let s = t.as_str().to_string();
@@ -484,7 +525,8 @@ pub async fn build_client(
     let stream = TcpStream::connect(remote_addr).await?;
     let io = TokioIo::new(stream);
 
-    let (sender, conn) = hyper::client::conn::http1::handshake(io).await
+    let (sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
         .map_err(|e| std::io::Error::other(e))?;
 
     // Spawn a task to poll the connection, driving the HTTP state
@@ -504,21 +546,22 @@ pub async fn req_into_full_bytes(
     let (parts, body) = req.into_parts();
 
     // Collect the whole body into memory
-    let collected = body.collect().await?;      // B::Error = hyper::Error
-    let bytes = collected.to_bytes();           // bytes::Bytes
+    let collected = body.collect().await?; // B::Error = hyper::Error
+    let bytes = collected.to_bytes(); // bytes::Bytes
 
     // Rebuild request with a concrete body type
     Ok(Request::from_parts(parts, Full::new(bytes)))
 }
 
-pub fn req_into_empty(
-    req: Request<Full<Bytes>>,
-) -> (Request<Full<Bytes>>, Request<Empty<Bytes>>) {
+pub fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>, Request<Empty<Bytes>>) {
     // Split into parts and body
     let (parts, body) = req.into_parts();
 
     let parts_clone = parts.clone();
-    (Request::from_parts(parts, body), Request::from_parts(parts_clone, Empty::new()))
+    (
+        Request::from_parts(parts, body),
+        Request::from_parts(parts_clone, Empty::new()),
+    )
 }
 
 pub async fn res_into_full_bytes(
@@ -528,8 +571,8 @@ pub async fn res_into_full_bytes(
     let (parts, body) = res.into_parts();
 
     // Collect the whole body into memory
-    let collected = body.collect().await?;      // B::Error = hyper::Error
-    let bytes = collected.to_bytes();           // bytes::Bytes
+    let collected = body.collect().await?; // B::Error = hyper::Error
+    let bytes = collected.to_bytes(); // bytes::Bytes
 
     // Rebuild request with a concrete body type
     Ok(Response::from_parts(parts, Full::new(bytes)))
@@ -545,12 +588,12 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     state: ProxyState,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if is_ws_upgrade(&req) {
-        let resp = ws_handshake_response(&req)
-            .unwrap_or_else(|| Response::builder()
+        let resp = ws_handshake_response(&req).unwrap_or_else(|| {
+            Response::builder()
                 .status(400)
                 .body(Full::new(Bytes::new()))
                 .unwrap()
-            );
+        });
 
         tokio::spawn(async move {
             if let Err(e) = handle_ws::<S>(req, sockinfo, state).await {
@@ -572,7 +615,7 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     .body(Full::new(Bytes::new()))
                     .unwrap();
                 return Ok(res);
-            },
+            }
 
             Ok(c) => c,
         };
@@ -584,7 +627,7 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     .body(Full::new(Bytes::new()))
                     .unwrap();
                 return Ok(res);
-            },
+            }
 
             Ok(req) => req,
         };
@@ -596,7 +639,7 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     .body(Full::new(Bytes::new()))
                     .unwrap();
                 return Ok(res);
-            },
+            }
 
             Ok(res) => res,
         };
@@ -608,21 +651,16 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     .body(Full::new(Bytes::new()))
                     .unwrap();
                 return Ok(res);
-            },
+            }
 
             Ok(res) => res,
         };
-        
 
         Ok(res)
     }
 }
 
-pub async fn serve_one_connection<S>(
-    io: TokioIo<S>,
-    sockinfo: SocketInfo,
-    state: ProxyState,
-) 
+pub async fn serve_one_connection<S>(io: TokioIo<S>, sockinfo: SocketInfo, state: ProxyState)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -676,6 +714,8 @@ pub fn run_port80(state: ProxyState) -> std::io::Result<()> {
         });
         res
     });
-    let res = join.join().map_err(|_e| std::io::Error::other("Join error"))?;
+    let res = join
+        .join()
+        .map_err(|_e| std::io::Error::other("Join error"))?;
     res
 }
