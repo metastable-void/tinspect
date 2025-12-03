@@ -431,9 +431,7 @@ pub fn is_ws_upgrade(req: &Request<Full<Bytes>>) -> bool {
     upgrade_hdr && conn_hdr
 }
 
-pub fn ws_handshake_response(
-    req: &Request<Full<Bytes>>,
-) -> Option<Response<Full<Bytes>>> {
+pub fn ws_handshake_response(req: &Request<Full<Bytes>>) -> Option<Response<Full<Bytes>>> {
     const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     let key = req.headers().get("Sec-WebSocket-Key")?.as_bytes();
@@ -734,7 +732,7 @@ pub(crate) async fn build_client(
     match transport {
         UpstreamTransport::Plain => {
             let io = TokioIo::new(stream);
-                    
+
             let (sender, conn) = hyper::client::conn::http1::handshake(io)
                 .await
                 .map_err(|e| std::io::Error::other(e))?;
@@ -747,13 +745,30 @@ pub(crate) async fn build_client(
             });
 
             Ok(sender)
-        },
+        }
 
         UpstreamTransport::Tls(server_name) => {
-            unimplemented!()
+            let connector = TlsConnector::from(tls_client_config().clone());
+            let tls_stream = connector
+                .connect(server_name, stream)
+                .await
+                .map_err(|e| std::io::Error::other(e))?;
+            let tls_stream = TlsStream::from(tls_stream);
+            let io = TokioIo::new(tls_stream);
+
+            let (sender, conn) = hyper::client::conn::http1::handshake(io)
+                .await
+                .map_err(|e| std::io::Error::other(e))?;
+
+            tokio::task::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!("Connection failed: {:?}", err);
+                }
+            });
+
+            Ok(sender)
         }
     }
-
 }
 
 pub async fn req_into_full_bytes(
@@ -804,7 +819,6 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     sockinfo: SocketInfo,
     state: ProxyState,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-
     let req = match req_into_full_bytes(req).await {
         Err(_e) => {
             let res = Response::builder()
@@ -846,7 +860,7 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     .body(Full::new(Bytes::new()))
                     .unwrap();
                 return Ok(res);
-            },
+            }
 
             Ok(s) => s,
         };
