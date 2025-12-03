@@ -13,6 +13,7 @@ use rustls::{
     sign::CertifiedKey,
 };
 
+/// Runtime state used to mint on-the-fly TLS server certificates for MITM.
 #[derive(Debug, Clone)]
 pub struct TlsMitmState {
     issuer: Arc<Issuer<'static, KeyPair>>,

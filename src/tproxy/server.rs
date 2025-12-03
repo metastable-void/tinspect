@@ -38,6 +38,7 @@ where
     }
 }
 
+/// Run the HTTPS MITM listener on port 443, blocking the current thread.
 pub fn run_port443(state: ProxyState, mitm_state: TlsMitmState) -> std::io::Result<()> {
     let join = std::thread::spawn(move || {
         let rt = Builder::new_multi_thread().enable_all().build()?;
@@ -86,6 +87,7 @@ pub fn run_port443(state: ProxyState, mitm_state: TlsMitmState) -> std::io::Resu
         .map_err(|_e| std::io::Error::other("Join error"))?
 }
 
+/// Run the HTTP listener on port 80, blocking the current thread.
 pub fn run_port80(state: ProxyState) -> std::io::Result<()> {
     let join = std::thread::spawn(move || {
         let rt = Builder::new_multi_thread().enable_all().build()?;

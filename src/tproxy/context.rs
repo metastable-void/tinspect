@@ -7,6 +7,7 @@ use crate::inspect::{
 };
 use crate::packet::SocketInfo;
 
+/// Shared inspector configuration used to run HTTP/WebSocket hooks.
 #[derive(Debug, Clone)]
 pub struct ProxyState {
     websocket_inspector: Option<Arc<dyn WebSocketInspector>>,
@@ -66,6 +67,7 @@ impl ProxyState {
     }
 }
 
+/// Snapshot of the metadata associated with a single HTTP request.
 #[derive(Debug, Clone)]
 pub struct HttpContext {
     is_tls: bool,
@@ -75,7 +77,11 @@ pub struct HttpContext {
 
 impl HttpContext {
     pub fn new(is_tls: bool, sockinfo: SocketInfo, req: Arc<EmptyRequest>) -> Self {
-        Self { is_tls, sockinfo, req }
+        Self {
+            is_tls,
+            sockinfo,
+            req,
+        }
     }
 
     pub fn is_tls(&self) -> bool {
@@ -91,6 +97,7 @@ impl HttpContext {
     }
 }
 
+/// Details about the proxied WebSocket upgrade and inspection channels.
 #[derive(Debug, Clone)]
 pub struct WebSocketContext {
     pub(crate) upgrade_req: Arc<FullRequest>,
