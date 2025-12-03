@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 authors = ["metastable-void"]
-description = "HTTP(S)/WebSocket MITM inspection proxy."
+description = "Transparent HTTP(S)/WebSocket MITM inspection proxy lib."
 license = "Apache-2.0 OR MPL-2.0"
 readme = "README.md"
 repository = "https://github.com/metastable-void/tinspect"
