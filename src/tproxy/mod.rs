@@ -905,17 +905,18 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         Ok(req) => req,
     };
 
-    let (req, empty_req) = req_into_empty(req);
-    if is_ws_upgrade(&req) {
-        let resp = ws_handshake_response(&req).unwrap_or_else(|| {
+    let (req_full, empty_req_ws) = req_into_empty(req);
+    if is_ws_upgrade(&req_full) {
+        let resp = ws_handshake_response(&req_full).unwrap_or_else(|| {
             Response::builder()
                 .status(400)
                 .body(Full::new(Bytes::new()))
                 .unwrap()
         });
 
+        let ws_req = req_full;
         tokio::spawn(async move {
-            if let Err(e) = handle_ws::<S>(req, sockinfo, state).await {
+            if let Err(e) = handle_ws::<S>(ws_req, sockinfo, state).await {
                 error!("WS error: {e}");
             }
         });
@@ -923,19 +924,29 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         return Ok(resp);
     }
 
-    let empty_req = Arc::new(empty_req);
+    let req = req_full;
+    let empty_req_for_request = Arc::new(empty_req_ws);
     let is_tls = !is_plain_tcp::<S>();
     let is_tls_2 = is_tls_stream::<S>();
     debug_assert_eq!(is_tls, is_tls_2, "Unsupported transport");
-    let http_ctx = HttpContext {
+    let http_ctx_req = HttpContext {
+        is_tls,
+        sockinfo,
+        req: empty_req_for_request.clone(),
+    };
+
+    let req = match state.process_http_request(req, http_ctx_req) {
+        Err(res) => return Ok(res),
+        Ok(req) => req,
+    };
+
+    let (req, empty_req_after) = req_into_empty(req);
+    let empty_req = Arc::new(empty_req_after);
+
+    let http_ctx_resp = HttpContext {
         is_tls,
         sockinfo,
         req: empty_req.clone(),
-    };
-
-    let req = match state.process_http_request(req, http_ctx.clone()) {
-        Err(res) => return Ok(res),
-        Ok(req) => req,
     };
 
     let mut client = if is_tls {
@@ -1001,7 +1012,7 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         Ok(res) => res,
     };
 
-    let res = state.process_http_response(res, http_ctx);
+    let res = state.process_http_response(res, http_ctx_resp);
 
     Ok(res)
 }
