@@ -1,18 +1,19 @@
-use rustls::ServerConfig;
+use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use socket2::{Domain, Protocol, Socket, Type};
-use tokio_rustls::TlsAcceptor;
 use std::convert::Infallible;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::AsRawFd;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 
 use tracing::error;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use http_body_util::{Empty, Full};
@@ -23,23 +24,23 @@ use hyper::upgrade;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use sha1::{Digest, Sha1};
+use std::fs;
+use std::io::BufReader;
 use tokio::time::{Duration, interval};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::client::Response as WsClientResponse;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::Utf8Bytes;
 use tokio_tungstenite::{WebSocketStream, client_async};
-use std::io::BufReader;
-use dashmap::DashMap;
-use std::fs;
 
-use rcgen::{CertificateParams, DnType, IsCa, KeyPair, SanType, Issuer};
+use rcgen::{CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType};
 use rustls::{
-    crypto::{aws_lc_rs, CryptoProvider},
-    pki_types::{CertificateDer, PrivateKeyDer},
+    crypto::{CryptoProvider, aws_lc_rs},
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
+use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::inspect::{
     EmptyRequest, FullRequest, FullResponse, HttpInspector, WebSocketInspector, WebSocketMessage,
@@ -63,28 +64,29 @@ pub struct TlsMitmState {
 
 impl TlsMitmState {
     /// Load your existing CA (PEM) and build state
-    pub fn from_ca_pem<P1: AsRef<Path>, P2: AsRef<Path>>(ca_cert_path: P1, ca_key_path: P2) -> std::io::Result<Self> {
+    pub fn from_ca_pem<P1: AsRef<Path>, P2: AsRef<Path>>(
+        ca_cert_path: P1,
+        ca_key_path: P2,
+    ) -> std::io::Result<Self> {
         // --- Load CA key for rcgen ---
         let ca_key_pem = fs::read_to_string(ca_key_path)?;
-        let ca_key = KeyPair::from_pem(&ca_key_pem)
-            .map_err(|e| std::io::Error::other(e))?;
+        let ca_key = KeyPair::from_pem(&ca_key_pem).map_err(|e| std::io::Error::other(e))?;
 
         // Issuer that can sign leaf certs from existing CA certificate
         let ca_cert_pem = fs::read_to_string(ca_cert_path)?;
-        let issuer = Issuer::from_ca_cert_pem(&ca_cert_pem, ca_key)
-            .map_err(|e| std::io::Error::other(e))?;
+        let issuer =
+            Issuer::from_ca_cert_pem(&ca_cert_pem, ca_key).map_err(|e| std::io::Error::other(e))?;
 
         // --- Also parse CA cert(s) into rustls::pki_types::CertificateDer ---
         let mut reader = BufReader::new(ca_cert_pem.as_bytes());
         let mut ca_chain = Vec::new();
         for cert in rustls_pemfile::certs(&mut reader) {
-            let cert: CertificateDer<'static> = cert?
-                .into_owned();
+            let cert: CertificateDer<'static> = cert?.into_owned();
             ca_chain.push(cert);
         }
 
         if ca_chain.is_empty() {
-            return Err(std::io::Error::other("no CA certificates found"))
+            return Err(std::io::Error::other("no CA certificates found"));
         }
 
         Ok(Self {
@@ -110,24 +112,25 @@ impl TlsMitmState {
     /// Actually generate a new leaf cert signed by the CA
     fn make_leaf_cert(&self, host: &str) -> std::io::Result<CertifiedKey> {
         // 1. Subject & SANs
-        let mut params = CertificateParams::new(vec![host.to_owned()])
-            .map_err(|e| std::io::Error::other(e))?;
+        let mut params =
+            CertificateParams::new(vec![host.to_owned()]).map_err(|e| std::io::Error::other(e))?;
         params.distinguished_name.push(DnType::CommonName, host);
 
         // This is an end-entity (non-CA) cert
         params.is_ca = IsCa::NoCa;
-        params.subject_alt_names.push(SanType::DnsName(host.to_owned().try_into().map_err(|e| std::io::Error::other(e))?));
+        params.subject_alt_names.push(SanType::DnsName(
+            host.to_owned()
+                .try_into()
+                .map_err(|e| std::io::Error::other(e))?,
+        ));
 
         // Reasonable key usages for TLS server auth
         use rcgen::{ExtendedKeyUsagePurpose as EKU, KeyUsagePurpose as KU};
         params.key_usages = vec![KU::KeyEncipherment, KU::DigitalSignature];
-        params
-            .extended_key_usages
-            .push(EKU::ServerAuth);
+        params.extended_key_usages.push(EKU::ServerAuth);
 
         // 2. Generate a fresh keypair for this leaf
-        let leaf_key = KeyPair::generate()
-            .map_err(|e| std::io::Error::other(e))?;
+        let leaf_key = KeyPair::generate().map_err(|e| std::io::Error::other(e))?;
 
         // 3. Ask rcgen to sign it with our CA Issuer
         let leaf_cert = params
@@ -153,7 +156,7 @@ impl TlsMitmState {
 impl ResolvesServerCert for TlsMitmState {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let server_name = client_hello.server_name()?; // reject invalid UTF-8 SNI
-        
+
         self.get_or_create_for_host(server_name).ok()
     }
 
@@ -455,39 +458,104 @@ fn into_full_response(res: WsClientResponse) -> FullResponse {
     Response::from_parts(parts, Full::new(Bytes::from(bytes)))
 }
 
+fn normalize_host(host: &str) -> String {
+    if let Some(stripped) = host.strip_prefix('[') {
+        if let Some(end) = stripped.find(']') {
+            return stripped[..end].to_string();
+        }
+    }
+
+    host.split_once(':')
+        .map(|(h, _)| h.to_string())
+        .unwrap_or_else(|| host.to_string())
+}
+
+fn server_name_from_req(
+    req: &FullRequest,
+    sockinfo: &SocketInfo,
+) -> std::io::Result<ServerName<'static>> {
+    let host = if let Some(host) = req.uri().host() {
+        host.to_string()
+    } else if let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok()) {
+        normalize_host(host)
+    } else {
+        sockinfo.server_addr.ip().to_string()
+    };
+
+    host.try_into()
+        .map_err(|_| std::io::Error::other("invalid server name for TLS upstream"))
+}
+
+fn tls_client_config() -> &'static Arc<ClientConfig> {
+    static CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    CLIENT_CONFIG.get_or_init(|| {
+        let root_store = RootCertStore::from_iter(TLS_SERVER_ROOTS.iter().cloned());
+        Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth(),
+        )
+    })
+}
+
+fn is_tls_stream<S: 'static>() -> bool {
+    std::any::TypeId::of::<S>() == std::any::TypeId::of::<TlsStream<TcpStream>>()
+}
+
+fn cast_ws_stream<S: 'static, T: 'static>(ws: WebSocketStream<T>) -> WebSocketStream<S> {
+    debug_assert_eq!(std::any::TypeId::of::<S>(), std::any::TypeId::of::<T>());
+    let ws = std::mem::ManuallyDrop::new(ws);
+    unsafe { std::ptr::read((&*ws as *const WebSocketStream<T>).cast::<WebSocketStream<S>>()) }
+}
+
+enum UpstreamTransport {
+    Plain,
+    Tls(ServerName<'static>),
+}
+
 /// returns a pair of upgrade response headers and WebSocketStream
-///
-/// TODO: handle both ws:// and wss:// in the future
 pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     req: FullRequest,
     sockinfo: SocketInfo,
 ) -> std::io::Result<(FullResponse, WebSocketStream<S>)> {
-    if !is_plain_tcp::<S>() {
-        // implement later maybe
-        unimplemented!();
-    }
-
-    let remote_addr = sockinfo.server_addr;
-    let ws_req = req.map(|_| ());
-    let stream = TcpStream::connect(remote_addr).await?;
-
-    let (ws_raw, res) = client_async(ws_req, stream)
-        .await
-        .map_err(|e| std::io::Error::other(e))?;
-
-    let res = into_full_response(res);
-
-    // SAFETY: the only supported downstream type is `TcpStream`, ensured by the early return above.
-    let ws_stream = {
-        let ws = std::mem::ManuallyDrop::new(ws_raw);
-        unsafe {
-            debug_assert!(is_plain_tcp::<S>());
-            let ptr = (&*ws as *const WebSocketStream<TcpStream>) as *const WebSocketStream<S>;
-            ptr.read()
-        }
+    let transport = if is_plain_tcp::<S>() {
+        UpstreamTransport::Plain
+    } else if is_tls_stream::<S>() {
+        let server_name = server_name_from_req(&req, &sockinfo)?;
+        UpstreamTransport::Tls(server_name)
+    } else {
+        return Err(std::io::Error::other(
+            "unsupported upstream websocket transport type",
+        ));
     };
 
-    Ok((res, ws_stream))
+    let ws_req = req.map(|_| ());
+    match (transport, ws_req) {
+        (UpstreamTransport::Plain, ws_req) => {
+            let stream = TcpStream::connect(sockinfo.server_addr).await?;
+            let (ws_stream, res) = client_async(ws_req, stream)
+                .await
+                .map_err(|e| std::io::Error::other(e))?;
+            let res = into_full_response(res);
+            let ws_stream = cast_ws_stream::<S, TcpStream>(ws_stream);
+            Ok((res, ws_stream))
+        }
+        (UpstreamTransport::Tls(server_name), ws_req) => {
+            let tcp_stream = TcpStream::connect(sockinfo.server_addr).await?;
+            let connector = TlsConnector::from(tls_client_config().clone());
+            let tls_stream = connector
+                .connect(server_name, tcp_stream)
+                .await
+                .map_err(|e| std::io::Error::other(e))?;
+            let tls_stream = TlsStream::from(tls_stream);
+            let (ws_stream, res) = client_async(ws_req, tls_stream)
+                .await
+                .map_err(|e| std::io::Error::other(e))?;
+            let res = into_full_response(res);
+            let ws_stream = cast_ws_stream::<S, TlsStream<TcpStream>>(ws_stream);
+            Ok((res, ws_stream))
+        }
+    }
 }
 
 pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
@@ -747,6 +815,8 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     }
 
     let is_tls = !is_plain_tcp::<S>();
+    let is_tls_2 = is_tls_stream::<S>();
+    debug_assert_eq!(is_tls, is_tls_2, "Unsupported transport");
     if is_tls {
         unimplemented!();
     } else {
@@ -864,6 +934,7 @@ pub fn run_port443(state: ProxyState, mitm_state: TlsMitmState) -> std::io::Resu
                         }
                     };
 
+                    let tls_stream = TlsStream::from(tls_stream);
                     let io = TokioIo::new(tls_stream);
 
                     serve_one_connection(io, sockinfo, state).await;
