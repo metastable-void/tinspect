@@ -1,0 +1,128 @@
+use std::sync::Arc;
+
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::inspect::{
+    EmptyRequest, FullRequest, FullResponse, HttpInspector, WebSocketInspector, WebSocketMessage,
+};
+use crate::packet::SocketInfo;
+
+#[derive(Debug, Clone)]
+pub struct ProxyState {
+    websocket_inspector: Option<Arc<dyn WebSocketInspector>>,
+    http_inspector: Option<Arc<dyn HttpInspector>>,
+}
+
+impl ProxyState {
+    pub fn new<H: HttpInspector, W: WebSocketInspector>(
+        http_inspector: Option<H>,
+        websocket_inspector: Option<W>,
+    ) -> Self {
+        Self {
+            websocket_inspector: websocket_inspector
+                .map(|w| Arc::new(w) as Arc<dyn WebSocketInspector>),
+            http_inspector: http_inspector.map(|h| Arc::new(h) as Arc<dyn HttpInspector>),
+        }
+    }
+
+    pub fn process_websocket_client_msg(
+        &self,
+        msg: WebSocketMessage,
+        ctx: WebSocketContext,
+    ) -> Option<WebSocketMessage> {
+        match self.websocket_inspector.clone() {
+            None => Some(msg),
+            Some(i) => i.inspect_client_msg(msg, ctx),
+        }
+    }
+
+    pub fn process_websocket_server_msg(
+        &self,
+        msg: WebSocketMessage,
+        ctx: WebSocketContext,
+    ) -> Option<WebSocketMessage> {
+        match self.websocket_inspector.clone() {
+            None => Some(msg),
+            Some(i) => i.inspect_server_msg(msg, ctx),
+        }
+    }
+
+    pub fn process_http_request(
+        &self,
+        req: FullRequest,
+        ctx: HttpContext,
+    ) -> Result<FullRequest, FullResponse> {
+        match self.http_inspector.clone() {
+            None => Ok(req),
+            Some(i) => i.inspect_request(req, ctx),
+        }
+    }
+
+    pub fn process_http_response(&self, res: FullResponse, ctx: HttpContext) -> FullResponse {
+        match self.http_inspector.clone() {
+            None => res,
+            Some(i) => i.inspect_response(res, ctx),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpContext {
+    is_tls: bool,
+    sockinfo: SocketInfo,
+    req: Arc<EmptyRequest>,
+}
+
+impl HttpContext {
+    pub fn new(is_tls: bool, sockinfo: SocketInfo, req: Arc<EmptyRequest>) -> Self {
+        Self { is_tls, sockinfo, req }
+    }
+
+    pub fn is_tls(&self) -> bool {
+        self.is_tls
+    }
+
+    pub fn sockinfo(&self) -> SocketInfo {
+        self.sockinfo
+    }
+
+    pub fn request(&self) -> Arc<EmptyRequest> {
+        self.req.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WebSocketContext {
+    pub(crate) upgrade_req: Arc<FullRequest>,
+    pub(crate) upgrade_res: Arc<FullResponse>,
+    pub(crate) sockinfo: SocketInfo,
+    pub(crate) is_tls: bool,
+    pub(crate) server_ch: UnboundedSender<WebSocketMessage>,
+    pub(crate) client_ch: UnboundedSender<WebSocketMessage>,
+}
+
+impl WebSocketContext {
+    pub fn upgrade_req(&self) -> Arc<FullRequest> {
+        self.upgrade_req.clone()
+    }
+
+    pub fn upgrade_res(&self) -> Arc<FullResponse> {
+        self.upgrade_res.clone()
+    }
+
+    pub fn sockinfo(&self) -> SocketInfo {
+        self.sockinfo
+    }
+
+    pub fn is_tls(&self) -> bool {
+        self.is_tls
+    }
+
+    pub fn send_server(&self, msg: WebSocketMessage) {
+        let _ = self.server_ch.send(msg);
+    }
+
+    pub fn send_client(&self, msg: WebSocketMessage) {
+        let _ = self.client_ch.send(msg);
+    }
+}
