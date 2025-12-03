@@ -409,7 +409,7 @@ fn to_maybe_ipv4(sockaddr: SocketAddr) -> SocketAddr {
     }
 }
 
-pub fn is_ws_upgrade(req: &Request<hyper::body::Incoming>) -> bool {
+pub fn is_ws_upgrade(req: &Request<Full<Bytes>>) -> bool {
     if req.version() != hyper::Version::HTTP_11 {
         return false;
     }
@@ -432,7 +432,7 @@ pub fn is_ws_upgrade(req: &Request<hyper::body::Incoming>) -> bool {
 }
 
 pub fn ws_handshake_response(
-    req: &Request<hyper::body::Incoming>,
+    req: &Request<Full<Bytes>>,
 ) -> Option<Response<Full<Bytes>>> {
     const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -470,8 +470,8 @@ fn normalize_host(host: &str) -> String {
         .unwrap_or_else(|| host.to_string())
 }
 
-fn server_name_from_req(
-    req: &FullRequest,
+fn server_name_from_req<B>(
+    req: &Request<B>,
     sockinfo: &SocketInfo,
 ) -> std::io::Result<ServerName<'static>> {
     let host = if let Some(host) = req.uri().host() {
@@ -560,14 +560,10 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
 }
 
 pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
-    req: Request<hyper::body::Incoming>,
+    req: FullRequest,
     sockinfo: SocketInfo,
     state: ProxyState,
 ) -> std::io::Result<()> {
-    let req = req_into_full_bytes(req)
-        .await
-        .map_err(|e| std::io::Error::other(e))?;
-
     // Upgrade to raw TCP stream
     let upgraded = upgrade::on(req.clone())
         .await
@@ -808,6 +804,20 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     sockinfo: SocketInfo,
     state: ProxyState,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+
+    let req = match req_into_full_bytes(req).await {
+        Err(_e) => {
+            let res = Response::builder()
+                .status(400)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            return Ok(res);
+        }
+
+        Ok(req) => req,
+    };
+
+    let (req, empty_req) = req_into_empty(req);
     if is_ws_upgrade(&req) {
         let resp = ws_handshake_response(&req).unwrap_or_else(|| {
             Response::builder()
@@ -828,10 +838,21 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let is_tls = !is_plain_tcp::<S>();
     let is_tls_2 = is_tls_stream::<S>();
     debug_assert_eq!(is_tls, is_tls_2, "Unsupported transport");
-    if is_tls {
-        unimplemented!();
-    } else {
-        let mut client = match build_client(sockinfo.server_addr, UpstreamTransport::Plain).await {
+    let mut client = if is_tls {
+        let server_name = match server_name_from_req(&empty_req, &sockinfo) {
+            Err(_e) => {
+                let res = Response::builder()
+                    .status(400)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap();
+                return Ok(res);
+            },
+
+            Ok(s) => s,
+        };
+
+        let transport = UpstreamTransport::Tls(server_name);
+        match build_client(sockinfo.server_addr, transport).await {
             Err(_e) => {
                 let res = Response::builder()
                     .status(400)
@@ -841,9 +862,9 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             }
 
             Ok(c) => c,
-        };
-
-        let req = match req_into_full_bytes(req).await {
+        }
+    } else {
+        match build_client(sockinfo.server_addr, UpstreamTransport::Plain).await {
             Err(_e) => {
                 let res = Response::builder()
                     .status(400)
@@ -852,35 +873,35 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                 return Ok(res);
             }
 
-            Ok(req) => req,
-        };
+            Ok(c) => c,
+        }
+    };
 
-        let res = match client.send_request(req).await {
-            Err(_e) => {
-                let res = Response::builder()
-                    .status(400)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap();
-                return Ok(res);
-            }
+    let res = match client.send_request(req).await {
+        Err(_e) => {
+            let res = Response::builder()
+                .status(400)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            return Ok(res);
+        }
 
-            Ok(res) => res,
-        };
+        Ok(res) => res,
+    };
 
-        let res = match res_into_full_bytes(res).await {
-            Err(_e) => {
-                let res = Response::builder()
-                    .status(400)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap();
-                return Ok(res);
-            }
+    let res = match res_into_full_bytes(res).await {
+        Err(_e) => {
+            let res = Response::builder()
+                .status(400)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            return Ok(res);
+        }
 
-            Ok(res) => res,
-        };
+        Ok(res) => res,
+    };
 
-        Ok(res)
-    }
+    Ok(res)
 }
 
 pub async fn serve_one_connection<S>(io: TokioIo<S>, sockinfo: SocketInfo, state: ProxyState)
