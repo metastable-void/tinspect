@@ -1,7 +1,7 @@
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::AsRawFd;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 
 fn make_tproxy_listener(port: u16) -> std::io::Result<std::net::TcpListener> {
     let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
@@ -96,4 +96,11 @@ fn get_original_dst(stream: &TcpStream) -> std::io::Result<SocketAddr> {
             ipv6, port, flowinfo, scope_id,
         )))
     }
+}
+
+fn bind(port: u16) -> std::io::Result<TcpListener> {
+    let std_listener = make_tproxy_listener(port)?;
+    std_listener.set_nonblocking(true)?;
+    let listener = TcpListener::from_std(std_listener)?;
+    Ok(listener)
 }
