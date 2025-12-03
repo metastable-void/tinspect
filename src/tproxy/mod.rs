@@ -294,10 +294,15 @@ pub fn ws_handshake_response(
 
 /// returns a pair of upgrade response headers and WebSocketStream
 /// 
-/// TODO: handle both ws:// and wss://
+/// TODO: handle both ws:// and wss:// in the future
 pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(req: FullRequest, sockinfo: SocketInfo) -> std::io::Result<(FullResponse, WebSocketStream<S>)> {
-    // TODO: implement this.
-    unimplemented!();
+    if is_plain_tcp::<S>() {
+        // TODO: implement this
+        unimplemented!();
+    } else {
+        // implement later maybe
+        unimplemented!();
+    }
 }
 
 pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
