@@ -3,6 +3,7 @@ pub use crate::tproxy::context::WebSocketContext;
 pub use http_body_util::{Empty, Full};
 pub use hyper::body::Bytes;
 pub use hyper::{Request, Response};
+pub use crate::packet::SocketInfo;
 
 use std::fmt::Debug;
 
