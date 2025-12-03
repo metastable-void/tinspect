@@ -29,13 +29,11 @@ use tokio_tungstenite::tungstenite::handshake::client::Response as WsClientRespo
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::Utf8Bytes;
 use tokio_tungstenite::{WebSocketStream, client_async};
-use rcgen::{Certificate, DistinguishedName};
-use std::{fs::File, io::BufReader};
-use rustls_pemfile::{read_one, Item};
+use std::io::BufReader;
 use dashmap::DashMap;
 use std::fs;
 
-use rcgen::{CertificateParams, DnType, IsCa, KeyPair, SanType, Issuer, BasicConstraints};
+use rcgen::{CertificateParams, DnType, IsCa, KeyPair, SanType, Issuer};
 use rustls::{
     crypto::{aws_lc_rs, CryptoProvider},
     pki_types::{CertificateDer, PrivateKeyDer},
