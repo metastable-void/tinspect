@@ -1,7 +1,10 @@
+use rustls::ServerConfig;
 use socket2::{Domain, Protocol, Socket, Type};
+use tokio_rustls::TlsAcceptor;
 use std::convert::Infallible;
 use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::AsRawFd;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
@@ -26,11 +29,152 @@ use tokio_tungstenite::tungstenite::handshake::client::Response as WsClientRespo
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::Utf8Bytes;
 use tokio_tungstenite::{WebSocketStream, client_async};
+use rcgen::{Certificate, DistinguishedName};
+use std::{fs::File, io::BufReader};
+use rustls_pemfile::{read_one, Item};
+use dashmap::DashMap;
+use std::fs;
+
+use rcgen::{CertificateParams, DnType, IsCa, KeyPair, SanType, Issuer, BasicConstraints};
+use rustls::{
+    crypto::{aws_lc_rs, CryptoProvider},
+    pki_types::{CertificateDer, PrivateKeyDer},
+    server::{ClientHello, ResolvesServerCert},
+    sign::CertifiedKey,
+};
 
 use crate::inspect::{
     EmptyRequest, FullRequest, FullResponse, HttpInspector, WebSocketInspector, WebSocketMessage,
 };
 use crate::packet::SocketInfo;
+
+pub type CertCache = DashMap<String, Arc<rustls::sign::CertifiedKey>>;
+
+/// Shared TLS MITM state
+#[derive(Debug, Clone)]
+pub struct TlsMitmState {
+    /// rcgen issuer based on your company CA
+    issuer: Arc<Issuer<'static, KeyPair>>,
+    /// CA chain in DER form (used as part of leaf chains)
+    ca_chain: Arc<Vec<CertificateDer<'static>>>,
+    /// Hostname -> CertifiedKey cache
+    cache: Arc<DashMap<String, Arc<CertifiedKey>>>,
+    /// rustls crypto provider
+    crypto: Arc<CryptoProvider>,
+}
+
+impl TlsMitmState {
+    /// Load your existing CA (PEM) and build state
+    pub fn from_ca_pem<P1: AsRef<Path>, P2: AsRef<Path>>(ca_cert_path: P1, ca_key_path: P2) -> std::io::Result<Self> {
+        // --- Load CA key for rcgen ---
+        let ca_key_pem = fs::read_to_string(ca_key_path)?;
+        let ca_key = KeyPair::from_pem(&ca_key_pem)
+            .map_err(|e| std::io::Error::other(e))?;
+
+        // Issuer that can sign leaf certs from existing CA certificate
+        let ca_cert_pem = fs::read_to_string(ca_cert_path)?;
+        let issuer = Issuer::from_ca_cert_pem(&ca_cert_pem, ca_key)
+            .map_err(|e| std::io::Error::other(e))?;
+
+        // --- Also parse CA cert(s) into rustls::pki_types::CertificateDer ---
+        let mut reader = BufReader::new(ca_cert_pem.as_bytes());
+        let mut ca_chain = Vec::new();
+        for cert in rustls_pemfile::certs(&mut reader) {
+            let cert: CertificateDer<'static> = cert?
+                .into_owned();
+            ca_chain.push(cert);
+        }
+
+        if ca_chain.is_empty() {
+            return Err(std::io::Error::other("no CA certificates found"))
+        }
+
+        Ok(Self {
+            issuer: Arc::new(issuer),
+            ca_chain: Arc::new(ca_chain),
+            cache: Arc::new(DashMap::new()),
+            crypto: Arc::new(aws_lc_rs::default_provider()),
+        })
+    }
+
+    /// Generate (or fetch from cache) a CertifiedKey for given hostname
+    fn get_or_create_for_host(&self, host: &str) -> std::io::Result<Arc<CertifiedKey>> {
+        if let Some(entry) = self.cache.get(host) {
+            return Ok(entry.clone());
+        }
+
+        let ck = self.make_leaf_cert(host)?;
+        let ck = Arc::new(ck);
+        self.cache.insert(host.to_owned(), ck.clone());
+        Ok(ck)
+    }
+
+    /// Actually generate a new leaf cert signed by the CA
+    fn make_leaf_cert(&self, host: &str) -> std::io::Result<CertifiedKey> {
+        // 1. Subject & SANs
+        let mut params = CertificateParams::new(vec![host.to_owned()])
+            .map_err(|e| std::io::Error::other(e))?;
+        params.distinguished_name.push(DnType::CommonName, host);
+
+        // This is an end-entity (non-CA) cert
+        params.is_ca = IsCa::NoCa;
+        params.subject_alt_names.push(SanType::DnsName(host.to_owned().try_into().map_err(|e| std::io::Error::other(e))?));
+
+        // Reasonable key usages for TLS server auth
+        use rcgen::{ExtendedKeyUsagePurpose as EKU, KeyUsagePurpose as KU};
+        params.key_usages = vec![KU::KeyEncipherment, KU::DigitalSignature];
+        params
+            .extended_key_usages
+            .push(EKU::ServerAuth);
+
+        // 2. Generate a fresh keypair for this leaf
+        let leaf_key = KeyPair::generate()
+            .map_err(|e| std::io::Error::other(e))?;
+
+        // 3. Ask rcgen to sign it with our CA Issuer
+        let leaf_cert = params
+            .signed_by(&leaf_key, &self.issuer)
+            .map_err(|e| std::io::Error::other(e))?;
+
+        // 4. Build rustls chain: [leaf, ca...]
+        let mut chain: Vec<CertificateDer<'static>> = Vec::with_capacity(1 + self.ca_chain.len());
+        chain.push(leaf_cert.der().clone()); // rcgen uses rustls-pki-types::CertificateDer internally
+        chain.extend(self.ca_chain.iter().cloned());
+
+        // 5. Convert leaf private key into PrivateKeyDer
+        let leaf_key_der = PrivateKeyDer::Pkcs8(leaf_key.serialize_der().into());
+
+        // 6. Build CertifiedKey using the configured crypto provider
+        let ck = CertifiedKey::from_der(chain, leaf_key_der, &self.crypto)
+            .map_err(|e| std::io::Error::other(e))?;
+
+        Ok(ck)
+    }
+}
+
+impl ResolvesServerCert for TlsMitmState {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let server_name = client_hello.server_name()?; // reject invalid UTF-8 SNI
+        
+        self.get_or_create_for_host(server_name).ok()
+    }
+
+    fn only_raw_public_keys(&self) -> bool {
+        false
+    }
+}
+
+fn make_server_config(state: TlsMitmState) -> ServerConfig {
+    let mut config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(state));
+
+    // ALPN etc as needed
+    config.alpn_protocols.push(b"http/1.1".to_vec());
+    //config.alpn_protocols.push(b"h2".to_vec());
+
+    config
+}
 
 #[derive(Debug, Clone)]
 pub struct ProxyState {
@@ -685,6 +829,55 @@ where
     {
         error!("HTTP/1 connection error: {err}");
     }
+}
+
+pub fn run_port443(state: ProxyState, mitm_state: TlsMitmState) -> std::io::Result<()> {
+    // spawning a thread so that this works even inside an async runtime (i.e. tokio::task::spawn_blocking())
+    let join = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+
+        let state_clone = state.clone();
+
+        let server_config = make_server_config(mitm_state);
+        let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let tls_acceptor_clone = tls_acceptor.clone();
+
+        let res = rt.block_on(async move {
+            let listener = bind(443)?;
+            loop {
+                let tls_acceptor = tls_acceptor_clone.clone();
+                let state = state_clone.clone();
+                let (stream, src) = listener.accept().await?;
+                let src = to_maybe_ipv4(src);
+                let dst = get_original_dst(&stream)?;
+                let sockinfo = SocketInfo {
+                    client_addr: src,
+                    server_addr: dst,
+                };
+
+                tokio::task::spawn(async move {
+                    let tls_stream = match tls_acceptor.accept(stream).await {
+                        Ok(tls_stream) => tls_stream,
+                        Err(err) => {
+                            eprintln!("failed to perform tls handshake: {err:#}");
+                            return;
+                        }
+                    };
+
+                    let io = TokioIo::new(tls_stream);
+
+                    serve_one_connection(io, sockinfo, state).await;
+                });
+            }
+        });
+        res
+    });
+    let res = join
+        .join()
+        .map_err(|_e| std::io::Error::other("Join error"))?;
+    res
 }
 
 pub fn run_port80(state: ProxyState) -> std::io::Result<()> {
