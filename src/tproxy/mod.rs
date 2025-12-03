@@ -9,7 +9,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 
-use tracing::error;
+use tracing::{debug, error};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -334,6 +334,7 @@ fn make_tproxy_listener(port: u16) -> std::io::Result<std::net::TcpListener> {
     let addr = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
     socket.bind(&addr.into())?;
     socket.listen(128)?;
+    debug!("TPROXY listener bound on port {}", port);
 
     Ok(socket.into())
 }
@@ -531,6 +532,10 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     let ws_req = req.map(|_| ());
     match (transport, ws_req) {
         (UpstreamTransport::Plain, ws_req) => {
+            debug!(
+                remote = %sockinfo.server_addr,
+                "Dialing upstream WebSocket over plain TCP"
+            );
             let stream = TcpStream::connect(sockinfo.server_addr).await?;
             let (ws_stream, res) = client_async(ws_req, stream)
                 .await
@@ -540,6 +545,12 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
             Ok((res, ws_stream))
         }
         (UpstreamTransport::Tls(server_name), ws_req) => {
+            let sni = server_name.to_str().into_owned();
+            debug!(
+                remote = %sockinfo.server_addr,
+                sni = %sni,
+                "Dialing upstream WebSocket over TLS"
+            );
             let tcp_stream = TcpStream::connect(sockinfo.server_addr).await?;
             let connector = TlsConnector::from(tls_client_config().clone());
             let tls_stream = connector
@@ -731,6 +742,10 @@ pub(crate) async fn build_client(
     let stream = TcpStream::connect(remote_addr).await?;
     match transport {
         UpstreamTransport::Plain => {
+            debug!(
+                remote = %remote_addr,
+                "Connecting upstream HTTP client over plain TCP"
+            );
             let io = TokioIo::new(stream);
 
             let (sender, conn) = hyper::client::conn::http1::handshake(io)
@@ -748,6 +763,12 @@ pub(crate) async fn build_client(
         }
 
         UpstreamTransport::Tls(server_name) => {
+            let sni = server_name.to_str().into_owned();
+            debug!(
+                remote = %remote_addr,
+                sni = %sni,
+                "Connecting upstream HTTP client over TLS"
+            );
             let connector = TlsConnector::from(tls_client_config().clone());
             let tls_stream = connector
                 .connect(server_name, stream)
@@ -970,6 +991,11 @@ pub fn run_port443(state: ProxyState, mitm_state: TlsMitmState) -> std::io::Resu
                     client_addr: src,
                     server_addr: dst,
                 };
+                debug!(
+                    client = %sockinfo.client_addr,
+                    server = %sockinfo.server_addr,
+                    "Accepted HTTPS tproxy connection"
+                );
 
                 tokio::task::spawn(async move {
                     let tls_stream = match tls_acceptor.accept(stream).await {
@@ -1015,6 +1041,11 @@ pub fn run_port80(state: ProxyState) -> std::io::Result<()> {
                     client_addr: src,
                     server_addr: dst,
                 };
+                debug!(
+                    client = %sockinfo.client_addr,
+                    server = %sockinfo.server_addr,
+                    "Accepted HTTP tproxy connection"
+                );
 
                 let io = TokioIo::new(stream);
                 tokio::task::spawn(serve_one_connection(io, sockinfo, state));
