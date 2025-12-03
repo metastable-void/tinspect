@@ -463,7 +463,7 @@ fn to_maybe_ipv4(sockaddr: SocketAddr) -> SocketAddr {
     }
 }
 
-pub fn is_ws_upgrade(req: &Request<Full<Bytes>>) -> bool {
+fn is_ws_upgrade(req: &Request<Full<Bytes>>) -> bool {
     if req.version() != hyper::Version::HTTP_11 {
         return false;
     }
@@ -485,7 +485,7 @@ pub fn is_ws_upgrade(req: &Request<Full<Bytes>>) -> bool {
     upgrade_hdr && conn_hdr
 }
 
-pub fn ws_handshake_response(req: &Request<Full<Bytes>>) -> Option<Response<Full<Bytes>>> {
+fn ws_handshake_response(req: &Request<Full<Bytes>>) -> Option<Response<Full<Bytes>>> {
     const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     let key = req.headers().get("Sec-WebSocket-Key")?.as_bytes();
@@ -567,7 +567,7 @@ pub(crate) enum UpstreamTransport {
 }
 
 /// returns a pair of upgrade response headers and WebSocketStream
-pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+pub(crate) async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     req: FullRequest,
     sockinfo: SocketInfo,
 ) -> std::io::Result<(FullResponse, WebSocketStream<S>)> {
@@ -621,7 +621,7 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     }
 }
 
-pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+pub(crate) async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     req: FullRequest,
     sockinfo: SocketInfo,
     state: ProxyState,
@@ -845,7 +845,7 @@ pub(crate) async fn build_client(
     }
 }
 
-pub async fn req_into_full_bytes(
+pub(crate) async fn req_into_full_bytes(
     req: Request<hyper::body::Incoming>,
 ) -> Result<Request<Full<Bytes>>, hyper::Error> {
     // Split into parts and body
@@ -859,7 +859,7 @@ pub async fn req_into_full_bytes(
     Ok(Request::from_parts(parts, Full::new(bytes)))
 }
 
-pub fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>, Request<Empty<Bytes>>) {
+pub(crate) fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>, Request<Empty<Bytes>>) {
     // Split into parts and body
     let (parts, body) = req.into_parts();
 
@@ -870,7 +870,7 @@ pub fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>, Reque
     )
 }
 
-pub async fn res_into_full_bytes(
+pub(crate) async fn res_into_full_bytes(
     res: Response<hyper::body::Incoming>,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     // Split into parts and body
@@ -884,11 +884,11 @@ pub async fn res_into_full_bytes(
     Ok(Response::from_parts(parts, Full::new(bytes)))
 }
 
-pub fn is_plain_tcp<S: 'static>() -> bool {
+pub(crate) fn is_plain_tcp<S: 'static>() -> bool {
     std::any::TypeId::of::<S>() == std::any::TypeId::of::<TcpStream>()
 }
 
-pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     req: Request<hyper::body::Incoming>,
     sockinfo: SocketInfo,
     state: ProxyState,
@@ -1017,7 +1017,7 @@ pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     Ok(res)
 }
 
-pub async fn serve_one_connection<S>(io: TokioIo<S>, sockinfo: SocketInfo, state: ProxyState)
+pub(crate) async fn serve_one_connection<S>(io: TokioIo<S>, sockinfo: SocketInfo, state: ProxyState)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
