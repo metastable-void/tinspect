@@ -1,23 +1,25 @@
-pub use crate::tproxy::HttpContext;
-pub use crate::tproxy::WebSocketContext;
+pub use crate::tproxy::context::HttpContext;
+pub use crate::tproxy::context::WebSocketContext;
 pub use http_body_util::{Empty, Full};
 pub use hyper::body::Bytes;
+pub use hyper::{Request, Response};
 
 use std::fmt::Debug;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WebSocketMessage {
     Text(String),
     Binary(Vec<u8>),
 }
 
 /// Request with full body included.
-pub type FullRequest = hyper::Request<Full<Bytes>>;
+pub type FullRequest = Request<Full<Bytes>>;
 
 /// Request without body.
-pub type EmptyRequest = hyper::Request<Empty<Bytes>>;
+pub type EmptyRequest = Request<Empty<Bytes>>;
 
 /// Request with full body included.
-pub type FullResponse = hyper::Response<Full<Bytes>>;
+pub type FullResponse = Response<Full<Bytes>>;
 
 pub trait HttpInspector: Debug + Send + Sync + 'static {
     /// returns a request that is sent to the server.
