@@ -24,7 +24,7 @@ This crate is not yet production ready, but the core pipeline works end-to-end.
 
 * Uses Hyper 1.x to parse HTTP/1 requests and responses.
 * Logging example shows full request/response forwarding.
-* Supports body buffering or streaming.
+* Supports body buffering (100MiB max).
 * Enables inspection and transformation at many points.
 
 ### HTTPS MITM (implemented)
@@ -33,7 +33,7 @@ This crate is not yet production ready, but the core pipeline works end-to-end.
 * Extracts SNI from the client handshake.
 * Dynamically generates per-hostname leaf certificates using **rcgen**.
 * Signs those certificates with a **company CA** loaded from PEM.
-* Caches generated certificates in a **dashmap** for fast lookup.
+* Caches generated certificates in an **LRU** cache for fast lookup.
 * Creates a second TLS client session to the upstream server.
 
 Effectively: full HTTPS MITM is already working.
@@ -47,15 +47,12 @@ Effectively: full HTTPS MITM is already working.
 * For `wss://`, this happens *after* TLS MITM → you receive decrypted frames.
 * Handles Ping/Pong automatically (tungstenite handles this internally).
 
-### Raw TCP forwarding (implemented)
-
-* For protocols not terminated by Hyper/rustls/tungstenite, the proxy can fall back to raw bidirectional forwarding.
-
 ### Missing / in progress
 
 * **HTTP/2 (h2) support**
   ALPN + rustls + Hyper integration for h2 still needs to be implemented.
 * **HTTP/3 / QUIC** (out of scope for now)
+* **Raw TCP forwarding fallback** (not planned)
 * **Advanced inspection plugins**
 * **Policy engine & configuration layer**
 
