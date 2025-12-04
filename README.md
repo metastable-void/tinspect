@@ -109,8 +109,8 @@ This is only a sketch.
 Adapt to your network and test on a safe machine:
 
 ```
-iptables -t mangle -A PREROUTING -p tcp --dport 80 -j TPROXY --on-port 80 --tproxy-mark 0x1/0x1
-iptables -t mangle -A PREROUTING -p tcp --dport 443 -j TPROXY --on-port 443 --tproxy-mark 0x1/0x1
+iptables -t mangle -A PREROUTING -i lan0 -p tcp --dport 80 -j TPROXY --on-port 80 --tproxy-mark 0x1/0x1
+iptables -t mangle -A PREROUTING -i lan0 -p tcp --dport 443 -j TPROXY --on-port 443 --tproxy-mark 0x1/0x1
 
 ip rule add fwmark 0x1 lookup 100
 ip route add local 0.0.0.0/0 dev lo table 100
