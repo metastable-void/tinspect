@@ -113,6 +113,24 @@ impl HttpContext {
     pub fn request(&self) -> Arc<EmptyRequest> {
         self.req.clone()
     }
+
+    pub fn get_url(&self) -> String {
+        let host = self.req.headers().get("host")
+            .map(|v| v.to_str().ok())
+            .flatten().map(|v| v.to_owned())
+            .unwrap_or_else(|| {
+                let remote = self.sockinfo.server_addr;
+                remote.to_string()
+            });
+        
+        let scheme = if self.is_tls { "https://" } else { "http://" };
+
+        let path = self.req.uri().path_and_query()
+            .map(|p| p.to_string())
+            .unwrap_or("/".to_string());
+
+        format!("{scheme}{host}{path}")
+    }
 }
 
 /// Details about the proxied WebSocket upgrade and inspection channels.
@@ -149,5 +167,23 @@ impl WebSocketContext {
 
     pub fn send_client(&self, msg: WebSocketMessage) {
         let _ = self.client_ch.send(msg);
+    }
+
+    pub fn get_url(&self) -> String {
+        let host = self.upgrade_req.headers().get("host")
+            .map(|v| v.to_str().ok())
+            .flatten().map(|v| v.to_owned())
+            .unwrap_or_else(|| {
+                let remote = self.sockinfo.server_addr;
+                remote.to_string()
+            });
+        
+        let scheme = if self.is_tls { "wss://" } else { "ws://" };
+
+        let path = self.upgrade_req.uri().path_and_query()
+            .map(|p| p.to_string())
+            .unwrap_or("/".to_string());
+
+        format!("{scheme}{host}{path}")
     }
 }

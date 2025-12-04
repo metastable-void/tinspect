@@ -74,7 +74,7 @@ pub(crate) async fn build_client(
     }
 }
 
-pub async fn req_into_full_bytes(
+pub(crate) async fn req_into_full_bytes(
     req: Request<Incoming>,
 ) -> Result<Request<Full<Bytes>>, hyper::Error> {
     let (parts, body) = req.into_parts();
@@ -83,7 +83,7 @@ pub async fn req_into_full_bytes(
     Ok(Request::from_parts(parts, Full::new(bytes)))
 }
 
-pub fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>, Request<Empty<Bytes>>) {
+pub(crate) fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>, Request<Empty<Bytes>>) {
     let (parts, body) = req.into_parts();
     let parts_clone = parts.clone();
     (
@@ -92,7 +92,7 @@ pub fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>, Reque
     )
 }
 
-pub async fn res_into_full_bytes(
+pub(crate) async fn res_into_full_bytes(
     res: Response<Incoming>,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let (parts, body) = res.into_parts();
@@ -101,7 +101,7 @@ pub async fn res_into_full_bytes(
     Ok(Response::from_parts(parts, Full::new(bytes)))
 }
 
-pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     req: Request<Incoming>,
     sockinfo: SocketInfo,
     state: InspectorRegistry,
