@@ -2,6 +2,24 @@ use clap::Parser;
 use std::path::PathBuf;
 use tinspect::inspect::{DnsAnswer, WebSocketMessage};
 
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
+fn init_tracing() {
+    tracing_subscriber::registry()
+        .with(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with(
+            fmt::layer()
+                .with_target(true)
+                .with_thread_ids(false)
+                .with_thread_names(false)
+                .compact(), // or .pretty()
+        )
+        .init();
+}
+
 /// Logging MITM proxy built with tinspect
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -116,6 +134,7 @@ impl tinspect::inspect::WebSocketInspector for Inspector {
 }
 
 fn main() -> std::io::Result<()> {
+    init_tracing();
     let args = Cli::parse();
 
     let inspector = Inspector;
