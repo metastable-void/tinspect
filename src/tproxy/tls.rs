@@ -14,6 +14,8 @@ use rustls::{
     sign::CertifiedKey,
 };
 
+use std::time::{SystemTime, Duration};
+
 /// Runtime state used to mint on-the-fly TLS server certificates for MITM.
 #[derive(Debug, Clone)]
 pub struct TlsMitmState {
@@ -84,6 +86,8 @@ impl TlsMitmState {
                 .try_into()
                 .map_err(|e| std::io::Error::other(e))?,
         ));
+        params.not_before = (SystemTime::now() - Duration::from_secs(3600)).into();
+        params.not_after  = (SystemTime::now() + Duration::from_secs(89 * 24 * 3600)).into();
 
         use rcgen::{ExtendedKeyUsagePurpose as EKU, KeyUsagePurpose as KU};
         params.key_usages = vec![KU::KeyEncipherment, KU::DigitalSignature];
