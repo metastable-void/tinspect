@@ -144,9 +144,9 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
     let upgraded = upgrade::on(req)
         .await
-        .map_err(|_e| std::io::Error::other("Upgrade error"))?
+        .map_err(|e| { tracing::error!(?e, "WS Upgrade error"); std::io::Error::other("Upgrade error") })?
         .downcast::<TokioIo<S>>()
-        .map_err(|_e| std::io::Error::other("Upgrade downcast error"))?
+        .map_err(|e| { tracing::error!(?e, "WS Upgrade downcast error");  std::io::Error::other("Upgrade downcast error") })?
         .io
         .into_inner();
 
