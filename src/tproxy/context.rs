@@ -3,23 +3,26 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::inspect::{
-    EmptyRequest, FullRequest, FullResponse, HttpInspector, WebSocketInspector, WebSocketMessage,
+    DnsAnswer, DnsInspector, DnsQuestion, EmptyRequest, FullRequest, FullResponse, HttpInspector, WebSocketInspector, WebSocketMessage
 };
 use crate::packet::SocketInfo;
 
 /// Shared inspector configuration used to run HTTP/WebSocket hooks.
 #[derive(Debug, Clone)]
 pub struct ProxyState {
+    dns_inspector: Option<Arc<dyn DnsInspector>>,
     websocket_inspector: Option<Arc<dyn WebSocketInspector>>,
     http_inspector: Option<Arc<dyn HttpInspector>>,
 }
 
 impl ProxyState {
-    pub fn new<H: HttpInspector, W: WebSocketInspector>(
+    pub fn new<D: DnsInspector, H: HttpInspector, W: WebSocketInspector>(
+        dns_inspector: Option<D>,
         http_inspector: Option<H>,
         websocket_inspector: Option<W>,
     ) -> Self {
         Self {
+            dns_inspector: dns_inspector.map(|d| Arc::new(d) as Arc<dyn DnsInspector>),
             websocket_inspector: websocket_inspector
                 .map(|w| Arc::new(w) as Arc<dyn WebSocketInspector>),
             http_inspector: http_inspector.map(|h| Arc::new(h) as Arc<dyn HttpInspector>),
@@ -63,6 +66,20 @@ impl ProxyState {
         match self.http_inspector.clone() {
             None => res,
             Some(i) => i.inspect_response(res, ctx),
+        }
+    }
+
+    pub fn process_dns_question(&self, q: DnsQuestion) -> Result<DnsQuestion, Vec<DnsAnswer>> {
+        match self.dns_inspector.clone() {
+            None => Ok(q),
+            Some(i) => i.inspect_question(q),
+        }
+    }
+
+    pub fn process_dns_answer(&self, a: Vec<DnsAnswer>) -> Vec<DnsAnswer> {
+        match self.dns_inspector.clone() {
+            None => a,
+            Some(i) => i.inspect_answer(a),
         }
     }
 }

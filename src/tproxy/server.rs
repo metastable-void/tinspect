@@ -16,7 +16,7 @@ use super::http::handler;
 use super::net::{bind, get_original_dst, to_maybe_ipv4};
 use super::tls::{TlsMitmState, make_server_config};
 
-pub async fn serve_one_connection<S>(io: TokioIo<S>, sockinfo: SocketInfo, state: ProxyState)
+pub(crate) async fn serve_one_connection<S>(io: TokioIo<S>, sockinfo: SocketInfo, state: ProxyState)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {

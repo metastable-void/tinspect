@@ -4,14 +4,27 @@ pub use crate::tproxy::context::WebSocketContext;
 pub use http_body_util::{Empty, Full};
 pub use hyper::body::Bytes;
 pub use hyper::{Request, Response};
+pub use hickory_proto::rr::domain::Name as DnsName;
 
 use std::fmt::Debug;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 
 /// Wrapper around text/binary WebSocket frames passed through inspectors.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WebSocketMessage {
     Text(String),
     Binary(Vec<u8>),
+}
+
+pub enum DnsQuestion {
+    A(DnsName),
+    AAAA(DnsName),
+}
+
+pub enum DnsAnswer {
+    A(DnsName, Ipv4Addr),
+    AAAA(DnsName, Ipv6Addr),
 }
 
 /// Request with full body included.
@@ -56,4 +69,9 @@ pub trait WebSocketInspector: Debug + Send + Sync + 'static {
         msg: WebSocketMessage,
         ctx: WebSocketContext,
     ) -> Option<WebSocketMessage>;
+}
+
+pub trait DnsInspector: Debug + Send + Sync + 'static {
+    fn inspect_question(&self, question: DnsQuestion) -> Result<DnsQuestion, Vec<DnsAnswer>>;
+    fn inspect_answer(&self, answer: Vec<DnsAnswer>) -> Vec<DnsAnswer>;
 }
