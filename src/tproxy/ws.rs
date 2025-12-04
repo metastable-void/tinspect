@@ -32,6 +32,18 @@ use super::transport::{
     tls_client_config,
 };
 
+fn host_for_req<B>(req: &Request<B>, sockinfo: &SocketInfo) -> String {
+    if let Some(host) = req.uri().host() {
+        return host.to_string();
+    }
+
+    if let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok()) {
+        return host.to_string();
+    }
+
+    sockinfo.server_addr.to_string()
+}
+
 fn into_full_response(res: WsClientResponse) -> FullResponse {
     let (parts, body) = res.into_parts();
     let bytes = body.unwrap_or_default();
@@ -94,9 +106,20 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
         ));
     };
 
-    let ws_req = req.map(|_| ());
+    let mut ws_req = req.map(|_| ());
+    let host = host_for_req(&ws_req, &sockinfo);
+    let path = ws_req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| "/".to_string());
+
     match (transport, ws_req) {
-        (UpstreamTransport::Plain, ws_req) => {
+        (UpstreamTransport::Plain, mut ws_req) => {
+            let uri = format!("ws://{}{}", host, path);
+            *ws_req.uri_mut() = uri
+                .parse()
+                .map_err(|_| std::io::Error::other("invalid ws uri"))?;
             tracing::debug!(
                 remote = %sockinfo.server_addr,
                 "Dialing upstream WebSocket over plain TCP"
@@ -109,7 +132,11 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
             let ws_stream = cast_ws_stream::<S, TcpStream>(ws_stream);
             Ok((res, ws_stream))
         }
-        (UpstreamTransport::Tls(server_name), ws_req) => {
+        (UpstreamTransport::Tls(server_name), mut ws_req) => {
+            let uri = format!("wss://{}{}", host, path);
+            *ws_req.uri_mut() = uri
+                .parse()
+                .map_err(|_| std::io::Error::other("invalid ws uri"))?;
             let sni = server_name.to_str().into_owned();
             tracing::debug!(
                 remote = %sockinfo.server_addr,
@@ -144,9 +171,15 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
     let upgraded = upgrade::on(req)
         .await
-        .map_err(|e| { tracing::error!(?e, "WS Upgrade error"); std::io::Error::other("Upgrade error") })?
+        .map_err(|e| {
+            tracing::error!(?e, "WS Upgrade error");
+            std::io::Error::other("Upgrade error")
+        })?
         .downcast::<TokioIo<S>>()
-        .map_err(|e| { tracing::error!(?e, "WS Upgrade downcast error");  std::io::Error::other("Upgrade downcast error") })?
+        .map_err(|e| {
+            tracing::error!(?e, "WS Upgrade downcast error");
+            std::io::Error::other("Upgrade downcast error")
+        })?
         .io
         .into_inner();
 
