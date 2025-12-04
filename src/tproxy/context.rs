@@ -115,17 +115,24 @@ impl HttpContext {
     }
 
     pub fn get_url(&self) -> String {
-        let host = self.req.headers().get("host")
+        let host = self
+            .req
+            .headers()
+            .get("host")
             .map(|v| v.to_str().ok())
-            .flatten().map(|v| v.to_owned())
+            .flatten()
+            .map(|v| v.to_owned())
             .unwrap_or_else(|| {
                 let remote = self.sockinfo.server_addr;
                 remote.to_string()
             });
-        
+
         let scheme = if self.is_tls { "https://" } else { "http://" };
 
-        let path = self.req.uri().path_and_query()
+        let path = self
+            .req
+            .uri()
+            .path_and_query()
             .map(|p| p.to_string())
             .unwrap_or("/".to_string());
 
@@ -174,17 +181,24 @@ impl WebSocketContext {
     }
 
     pub fn get_url(&self) -> String {
-        let host = self.upgrade_req.headers().get("host")
+        let host = self
+            .upgrade_req
+            .headers()
+            .get("host")
             .map(|v| v.to_str().ok())
-            .flatten().map(|v| v.to_owned())
+            .flatten()
+            .map(|v| v.to_owned())
             .unwrap_or_else(|| {
                 let remote = self.sockinfo.server_addr;
                 remote.to_string()
             });
-        
+
         let scheme = if self.is_tls { "wss://" } else { "ws://" };
 
-        let path = self.upgrade_req.uri().path_and_query()
+        let path = self
+            .upgrade_req
+            .uri()
+            .path_and_query()
             .map(|p| p.to_string())
             .unwrap_or("/".to_string());
 

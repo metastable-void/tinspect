@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
+use bytes::BytesMut;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
-use hyper::{Request, Response};
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -17,6 +18,8 @@ use super::transport::{
     UpstreamTransport, is_plain_tcp, is_tls_stream, server_name_from_req, tls_client_config,
 };
 use super::ws::{handle_ws, is_ws_upgrade, ws_handshake_response};
+
+const BODY_SIZE_LIMIT: usize = 100 * 1024 * 1024;
 
 pub(crate) async fn build_client(
     remote_addr: std::net::SocketAddr,
@@ -74,16 +77,36 @@ pub(crate) async fn build_client(
     }
 }
 
+async fn collect_body_with_limit(mut body: Incoming) -> io::Result<Bytes> {
+    let mut buf = BytesMut::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| io::Error::other(e))?;
+        match frame.into_data() {
+            Ok(chunk) => {
+                if buf.len() + chunk.len() > BODY_SIZE_LIMIT {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "body too large"));
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Err(_frame) => {
+                // ignore trailers
+            }
+        }
+    }
+    Ok(buf.freeze())
+}
+
 pub(crate) async fn req_into_full_bytes(
     req: Request<Incoming>,
-) -> Result<Request<Full<Bytes>>, hyper::Error> {
+) -> io::Result<Request<Full<Bytes>>> {
     let (parts, body) = req.into_parts();
-    let collected = body.collect().await?;
-    let bytes = collected.to_bytes();
+    let bytes = collect_body_with_limit(body).await?;
     Ok(Request::from_parts(parts, Full::new(bytes)))
 }
 
-pub(crate) fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>, Request<Empty<Bytes>>) {
+pub(crate) fn req_into_empty(
+    req: Request<Full<Bytes>>,
+) -> (Request<Full<Bytes>>, Request<Empty<Bytes>>) {
     let (parts, body) = req.into_parts();
     let parts_clone = parts.clone();
     (
@@ -94,10 +117,9 @@ pub(crate) fn req_into_empty(req: Request<Full<Bytes>>) -> (Request<Full<Bytes>>
 
 pub(crate) async fn res_into_full_bytes(
     res: Response<Incoming>,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+) -> io::Result<Response<Full<Bytes>>> {
     let (parts, body) = res.into_parts();
-    let collected = body.collect().await?;
-    let bytes = collected.to_bytes();
+    let bytes = collect_body_with_limit(body).await?;
     Ok(Response::from_parts(parts, Full::new(bytes)))
 }
 
@@ -127,9 +149,14 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     }
 
     let req = match req_into_full_bytes(req).await {
-        Err(_e) => {
+        Err(e) => {
+            let status = if e.kind() == io::ErrorKind::InvalidData {
+                StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                StatusCode::BAD_REQUEST
+            };
             let res = Response::builder()
-                .status(400)
+                .status(status)
                 .body(Full::new(Bytes::new()))
                 .unwrap();
             return Ok(res);
@@ -202,9 +229,14 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     };
 
     let res = match res_into_full_bytes(res).await {
-        Err(_e) => {
+        Err(e) => {
+            let status = if e.kind() == io::ErrorKind::InvalidData {
+                StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
             let res = Response::builder()
-                .status(400)
+                .status(status)
                 .body(Full::new(Bytes::new()))
                 .unwrap();
             return Ok(res);

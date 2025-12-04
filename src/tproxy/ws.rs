@@ -138,9 +138,7 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     sockinfo: SocketInfo,
     state: InspectorRegistry,
 ) -> std::io::Result<()> {
-    let req = req_into_full_bytes(req)
-        .await
-        .map_err(|e| std::io::Error::other(e))?;
+    let req = req_into_full_bytes(req).await?;
 
     let upgraded = upgrade::on(req.clone())
         .await

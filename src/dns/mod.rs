@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io,
     net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::Arc,
@@ -12,7 +13,7 @@ use hickory_proto::{
         rdata::{a::A as RDataA, aaaa::AAAA as RDataAAAA},
     },
 };
-use hickory_resolver::{TokioResolver, lookup::Lookup};
+use hickory_resolver::{ResolveError, TokioResolver, lookup::Lookup};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -21,8 +22,8 @@ use tokio::{
 use tracing::warn;
 
 use crate::{
-    inspect::{DnsAnswer, DnsQuestion},
     InspectorRegistry,
+    inspect::{DnsAnswer, DnsQuestion},
 };
 
 const DNS_BUFFER_SIZE: usize = 4096;
@@ -184,7 +185,8 @@ async fn handle_dns_message(
         }
         Err(answers) => {
             let answers = state.process_dns_answer(answers);
-            let records = answers_to_records(&answers);
+            let ttl_map = HashMap::new();
+            let records = answers_to_records(&answers, &ttl_map);
             let mut resp = response;
             for record in records {
                 resp.add_answer(record);
@@ -216,14 +218,15 @@ async fn forward_query(
         Ok(lookup) => lookup,
         Err(err) => {
             warn!("resolver lookup failed: {err}");
-            return encode_with_code(response, ResponseCode::ServFail);
+            let code = response_code_for_resolve_error(&err);
+            return encode_with_code(response, code);
         }
     };
 
     let upstream_records = collect_relevant_records(&lookup);
-    let flattened_answers = flatten_answers(&upstream_records, &name);
+    let (flattened_answers, ttl_map) = flatten_answers(&upstream_records, &name);
     let inspected_answers = state.process_dns_answer(flattened_answers);
-    let final_records = answers_to_records(&inspected_answers);
+    let final_records = answers_to_records(&inspected_answers, &ttl_map);
     for record in final_records {
         response.add_answer(record);
     }
@@ -248,6 +251,16 @@ fn encode_with_code(mut message: Message, code: ResponseCode) -> Option<Vec<u8>>
     message.to_vec().ok()
 }
 
+fn response_code_for_resolve_error(err: &ResolveError) -> ResponseCode {
+    if err.is_nx_domain() {
+        ResponseCode::NXDomain
+    } else if err.is_no_records_found() {
+        ResponseCode::NoError
+    } else {
+        ResponseCode::ServFail
+    }
+}
+
 fn dns_question_from_query(query: &Query) -> Option<DnsQuestion> {
     match query.query_type() {
         RecordType::A => Some(DnsQuestion::A(query.name().clone())),
@@ -264,29 +277,60 @@ fn collect_relevant_records(lookup: &Lookup) -> Vec<Record> {
         .collect()
 }
 
-fn flatten_answers(records: &[Record], name: &Name) -> Vec<DnsAnswer> {
-    records
-        .iter()
-        .filter_map(|record| match record.data() {
-            RData::A(data) => Some(DnsAnswer::A(name.clone(), (*data).into())),
-            RData::AAAA(data) => Some(DnsAnswer::AAAA(name.clone(), (*data).into())),
-            _ => None,
-        })
-        .collect()
+fn flatten_answers(records: &[Record], name: &Name) -> (Vec<DnsAnswer>, HashMap<AnswerKey, u32>) {
+    let mut ttl_map = HashMap::new();
+    let mut answers = Vec::new();
+    for record in records {
+        match record.data() {
+            RData::A(data) => {
+                let answer = DnsAnswer::A(name.clone(), (*data).into());
+                ttl_map.insert(make_answer_key(&answer), record.ttl());
+                answers.push(answer);
+            }
+            RData::AAAA(data) => {
+                let answer = DnsAnswer::AAAA(name.clone(), (*data).into());
+                ttl_map.insert(make_answer_key(&answer), record.ttl());
+                answers.push(answer);
+            }
+            _ => {}
+        }
+    }
+    (answers, ttl_map)
 }
 
-fn answers_to_records(answers: &[DnsAnswer]) -> Vec<Record> {
+fn answers_to_records(answers: &[DnsAnswer], ttl_map: &HashMap<AnswerKey, u32>) -> Vec<Record> {
     answers
         .iter()
         .map(|answer| match answer {
             DnsAnswer::A(name, addr) => {
-                Record::from_rdata(name.clone(), DEFAULT_TTL, RData::A(RDataA::from(*addr)))
+                let key = make_answer_key(answer);
+                let ttl = ttl_map.get(&key).copied().unwrap_or(DEFAULT_TTL);
+                Record::from_rdata(name.clone(), ttl, RData::A(RDataA::from(*addr)))
             }
-            DnsAnswer::AAAA(name, addr) => Record::from_rdata(
-                name.clone(),
-                DEFAULT_TTL,
-                RData::AAAA(RDataAAAA::from(*addr)),
-            ),
+            DnsAnswer::AAAA(name, addr) => {
+                let key = make_answer_key(answer);
+                let ttl = ttl_map.get(&key).copied().unwrap_or(DEFAULT_TTL);
+                Record::from_rdata(name.clone(), ttl, RData::AAAA(RDataAAAA::from(*addr)))
+            }
         })
         .collect()
+}
+
+#[derive(Hash, Eq, PartialEq, Clone)]
+struct AnswerKey {
+    name: Name,
+    addr: IpAddr,
+}
+
+fn make_answer_key(answer: &DnsAnswer) -> AnswerKey {
+    match answer {
+        DnsAnswer::A(name, addr) => AnswerKey {
+            name: name.clone(),
+            addr: IpAddr::V4(*addr),
+        },
+        DnsAnswer::AAAA(name, addr) => AnswerKey {
+            name: name.clone(),
+            addr: IpAddr::V6(*addr),
+        },
+    }
 }

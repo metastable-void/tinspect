@@ -1,9 +1,10 @@
 use std::fs;
 use std::io::BufReader;
+use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use dashmap::DashMap;
+use lru::LruCache;
 use rcgen::{CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType};
 use rustls::{
     ServerConfig,
@@ -18,9 +19,11 @@ use rustls::{
 pub struct TlsMitmState {
     issuer: Arc<Issuer<'static, KeyPair>>,
     ca_chain: Arc<Vec<CertificateDer<'static>>>,
-    cache: Arc<DashMap<String, Arc<CertifiedKey>>>,
+    cache: Arc<Mutex<LruCache<String, Arc<CertifiedKey>>>>,
     crypto: Arc<CryptoProvider>,
 }
+
+const CERT_CACHE_CAPACITY: usize = 512;
 
 impl TlsMitmState {
     pub fn from_ca_pem<P1: AsRef<Path>, P2: AsRef<Path>>(
@@ -48,19 +51,26 @@ impl TlsMitmState {
         Ok(Self {
             issuer: Arc::new(issuer),
             ca_chain: Arc::new(ca_chain),
-            cache: Arc::new(DashMap::new()),
+            cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(CERT_CACHE_CAPACITY).unwrap(),
+            ))),
             crypto: Arc::new(aws_lc_rs::default_provider()),
         })
     }
 
     fn get_or_create_for_host(&self, host: &str) -> std::io::Result<Arc<CertifiedKey>> {
-        if let Some(entry) = self.cache.get(host) {
-            return Ok(entry.clone());
+        {
+            let mut cache = self.cache.lock().expect("TLS cache poisoned");
+            if let Some(entry) = cache.get(host).cloned() {
+                return Ok(entry);
+            }
         }
 
         let ck = self.make_leaf_cert(host)?;
         let ck = Arc::new(ck);
-        self.cache.insert(host.to_owned(), ck.clone());
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.put(host.to_owned(), ck.clone());
+        }
         Ok(ck)
     }
 

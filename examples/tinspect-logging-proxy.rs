@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use clap::Parser;
+use std::path::PathBuf;
 use tinspect::inspect::{DnsAnswer, WebSocketMessage};
 
 /// Logging MITM proxy built with tinspect
@@ -8,7 +8,7 @@ use tinspect::inspect::{DnsAnswer, WebSocketMessage};
 struct Cli {
     #[arg(short = 'c', long, value_name = "PATH")]
     ca_cert: PathBuf,
-    
+
     #[arg(short = 'k', long, value_name = "PATH")]
     ca_key: PathBuf,
 }
@@ -17,7 +17,10 @@ struct Cli {
 struct Inspector;
 
 impl tinspect::inspect::DnsInspector for Inspector {
-    fn inspect_answer(&self, answer: Vec<tinspect::inspect::DnsAnswer>) -> Vec<tinspect::inspect::DnsAnswer> {
+    fn inspect_answer(
+        &self,
+        answer: Vec<tinspect::inspect::DnsAnswer>,
+    ) -> Vec<tinspect::inspect::DnsAnswer> {
         for ans in &answer {
             match ans {
                 DnsAnswer::A(name, addr) => {
@@ -32,17 +35,20 @@ impl tinspect::inspect::DnsInspector for Inspector {
         answer
     }
 
-    fn inspect_question(&self, question: tinspect::inspect::DnsQuestion) -> Result<tinspect::inspect::DnsQuestion, Vec<tinspect::inspect::DnsAnswer>> {
+    fn inspect_question(
+        &self,
+        question: tinspect::inspect::DnsQuestion,
+    ) -> Result<tinspect::inspect::DnsQuestion, Vec<tinspect::inspect::DnsAnswer>> {
         Ok(question)
     }
 }
 
 impl tinspect::inspect::HttpInspector for Inspector {
     fn inspect_request(
-            &self,
-            req: tinspect::inspect::FullRequest,
-            ctx: tinspect::inspect::HttpContext,
-        ) -> Result<tinspect::inspect::FullRequest, tinspect::inspect::FullResponse> {
+        &self,
+        req: tinspect::inspect::FullRequest,
+        ctx: tinspect::inspect::HttpContext,
+    ) -> Result<tinspect::inspect::FullRequest, tinspect::inspect::FullResponse> {
         let scheme = if ctx.is_tls() { "HTTPS" } else { "HTTP" };
         let method = ctx.method();
         let url = ctx.get_url();
@@ -51,7 +57,11 @@ impl tinspect::inspect::HttpInspector for Inspector {
         Ok(req)
     }
 
-    fn inspect_response(&self, res: tinspect::inspect::FullResponse, ctx: tinspect::inspect::HttpContext) -> tinspect::inspect::FullResponse {
+    fn inspect_response(
+        &self,
+        res: tinspect::inspect::FullResponse,
+        ctx: tinspect::inspect::HttpContext,
+    ) -> tinspect::inspect::FullResponse {
         let scheme = if ctx.is_tls() { "HTTPS" } else { "HTTP" };
         let code = res.status().as_str().to_owned();
         let method = ctx.method();
@@ -63,10 +73,10 @@ impl tinspect::inspect::HttpInspector for Inspector {
 
 impl tinspect::inspect::WebSocketInspector for Inspector {
     fn inspect_client_msg(
-            &self,
-            msg: tinspect::inspect::WebSocketMessage,
-            ctx: tinspect::inspect::WebSocketContext,
-        ) -> Option<tinspect::inspect::WebSocketMessage> {
+        &self,
+        msg: tinspect::inspect::WebSocketMessage,
+        ctx: tinspect::inspect::WebSocketContext,
+    ) -> Option<tinspect::inspect::WebSocketMessage> {
         let scheme = if ctx.is_tls() { "WSS" } else { "WS" };
         let url = ctx.get_url();
         match &msg {
@@ -84,10 +94,10 @@ impl tinspect::inspect::WebSocketInspector for Inspector {
     }
 
     fn inspect_server_msg(
-            &self,
-            msg: tinspect::inspect::WebSocketMessage,
-            ctx: tinspect::inspect::WebSocketContext,
-        ) -> Option<tinspect::inspect::WebSocketMessage> {
+        &self,
+        msg: tinspect::inspect::WebSocketMessage,
+        ctx: tinspect::inspect::WebSocketContext,
+    ) -> Option<tinspect::inspect::WebSocketMessage> {
         let scheme = if ctx.is_tls() { "WSS" } else { "WS" };
         let url = ctx.get_url();
         match &msg {
@@ -110,11 +120,8 @@ fn main() -> std::io::Result<()> {
 
     let inspector = Inspector;
     let mitm = tinspect::TlsMitmState::from_ca_pem(&args.ca_cert, &args.ca_key)?;
-    let registry = tinspect::InspectorRegistry::new(
-        Some(inspector),
-        Some(inspector),
-        Some(inspector)
-    );
+    let registry =
+        tinspect::InspectorRegistry::new(Some(inspector), Some(inspector), Some(inspector));
 
     tinspect::run_background(registry, mitm)?;
     loop {
