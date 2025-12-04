@@ -139,8 +139,10 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     state: InspectorRegistry,
 ) -> std::io::Result<()> {
     let req = req_into_full_bytes(req).await?;
+    let req_for_upstream = req.clone();
+    let req_for_ctx = req.clone();
 
-    let upgraded = upgrade::on(req.clone())
+    let upgraded = upgrade::on(req)
         .await
         .map_err(|_e| std::io::Error::other("Upgrade error"))?
         .downcast::<TokioIo<S>>()
@@ -150,7 +152,7 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
     let mut ws = WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
 
-    let (res, mut ws_upstream) = create_upstream_ws::<S>(req.clone(), sockinfo).await?;
+    let (res, mut ws_upstream) = create_upstream_ws::<S>(req_for_upstream, sockinfo).await?;
 
     let mut ticker = interval(Duration::from_secs(15));
     let is_tls = !is_plain_tcp::<S>();
@@ -160,7 +162,7 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
     let ctx = WebSocketContext {
         is_tls,
-        upgrade_req: Arc::new(req.clone()),
+        upgrade_req: Arc::new(req_for_ctx.clone()),
         upgrade_res: Arc::new(res),
         sockinfo,
         server_ch: tx_server,
