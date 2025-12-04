@@ -211,6 +211,9 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             }
             Some(msg) = ws.next() => {
                 let msg = msg.map_err(|e| std::io::Error::other(e))?;
+
+                // from the docs: "Even in async mode Tungstenite replies to pings automatically
+                // and immediately. It is safe just to ignore pings as Tungstenite handles them for you."
                 if msg.is_ping() { continue; }
                 if msg.is_pong() { continue; }
                 if msg.is_close() {
@@ -242,6 +245,9 @@ pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             }
             Some(msg) = ws_upstream.next() => {
                 let msg = msg.map_err(|e| std::io::Error::other(e))?;
+
+                // from the docs: "Even in async mode Tungstenite replies to pings automatically
+                // and immediately. It is safe just to ignore pings as Tungstenite handles them for you."
                 if msg.is_ping() { continue; }
                 if msg.is_pong() { continue; }
                 if msg.is_close() {
