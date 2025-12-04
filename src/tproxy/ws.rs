@@ -106,7 +106,7 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
         ));
     };
 
-    let mut ws_req = req.map(|_| ());
+    let ws_req = req.map(|_| ());
     let host = host_for_req(&ws_req, &sockinfo);
     let path = ws_req
         .uri()
