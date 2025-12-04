@@ -133,7 +133,31 @@ The listeners bind to `[::]:80` and `[::]:443` with `IPV6_V6ONLY` disabled, so a
 ### Making the rules persistent
 
 * **systemd service** – create a oneshot unit (e.g. `/etc/systemd/system/tinspect-tproxy.service`) that runs the iptables/ip rule commands in `ExecStart`, and add matching `ExecStop` lines that delete them. `WantedBy=multi-user.target` keeps them applied during normal boots.
-* **iptables-persistent** – store the mangle table and routing adjustments in `/etc/iptables/rules.v4` and `/etc/iptables/rules.v6` (`iptables-save > /etc/iptables/rules.v4`). The ip rule / ip route commands can go into `/etc/network/if-pre-up.d/` scripts or a systemd unit, depending on your distro.
+* **systemd-networkd** – if your host uses `systemd-networkd`, you can keep everything in declarative files:
+
+  * `*.network` – apply the fwmark routing when the interface comes up:
+
+    ```
+    [Match]
+    Name=lan0
+
+    [RoutingPolicyRule]
+    Priority=100
+    FwMark=0x1
+    Table=100
+
+    [Route]
+    Table=100
+    Gateway=0.0.0.0
+    PreferredSource=0.0.0.0
+    Type=local
+    ```
+
+    Add a second `[RoutingPolicyRule]/[Route]` block for IPv6 (`Table=100`, `Type=local`, `Gateway=::`).
+
+  * `*.netdev` – attach a `tc` qdisc or IP rule helper if you prefer invoking `iptables` via `ExecStart=`; otherwise use a companion `*.service` with `WantedBy=sys-subsystem-net-devices-lan0.device` so the firewall rules track the interface state.
+
+* **iptables-persistent** – store the mangle table in `/etc/iptables/rules.v4` and `/etc/iptables/rules.v6` (`iptables-save > /etc/iptables/rules.v4`). The routing policy entries can be added from `systemd-networkd` as above or via `/etc/network/if-pre-up.d/` scripts.
 * Always pair persistence with a rollback plan (console access or a watchdog timer) so you do not lock yourself out of the machine.
 
 ---
