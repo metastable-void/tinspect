@@ -131,6 +131,10 @@ impl HttpContext {
 
         format!("{scheme}{host}{path}")
     }
+
+    pub fn method(&self) -> String {
+        self.req.method().to_string()
+    }
 }
 
 /// Details about the proxied WebSocket upgrade and inspection channels.
