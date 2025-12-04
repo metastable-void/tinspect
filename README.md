@@ -105,20 +105,36 @@ cargo run --example tinspect-logging-proxy
 
 ## Minimal TPROXY setup (IPv4 sketch)
 
-This is only a sketch.
-Adapt to your network and test on a safe machine:
+This is only a starting point.
+Adapt to your network (interfaces, marks, routing tables) and test on a safe machine:
 
 ```
-iptables -t mangle -A PREROUTING -i lan0 -p tcp --dport 80 -j TPROXY --on-port 80 --tproxy-mark 0x1/0x1
+# send TCP/80 + TCP/443 traffic from lan0 to our transparent proxy
+iptables -t mangle -A PREROUTING -i lan0 -p tcp --dport 80  -j TPROXY --on-port 80  --tproxy-mark 0x1/0x1
 iptables -t mangle -A PREROUTING -i lan0 -p tcp --dport 443 -j TPROXY --on-port 443 --tproxy-mark 0x1/0x1
 
+# route marked packets back to the local machine so the proxy can accept them
 ip rule add fwmark 0x1 lookup 100
 ip route add local 0.0.0.0/0 dev lo table 100
 ```
 
-For IPv6 you would use `ip6tables` and a matching `ip -6 route` setup.
+### IPv6 translation
 
-The example listener binds on `[::]:80` and receives both IPv4 and IPv6 traffic when `IPV6_V6ONLY` is disabled.
+```
+ip6tables -t mangle -A PREROUTING -i lan0 -p tcp --dport 80  -j TPROXY --on-port 80  --tproxy-mark 0x1/0x1
+ip6tables -t mangle -A PREROUTING -i lan0 -p tcp --dport 443 -j TPROXY --on-port 443 --tproxy-mark 0x1/0x1
+
+ip -6 rule add fwmark 0x1 lookup 100
+ip -6 route add local ::/0 dev lo table 100
+```
+
+The listeners bind to `[::]:80` and `[::]:443` with `IPV6_V6ONLY` disabled, so a single socket handles both IPv4 and IPv6 once the NAT rules feed the traffic back to the host.
+
+### Making the rules persistent
+
+* **systemd service** – create a oneshot unit (e.g. `/etc/systemd/system/tinspect-tproxy.service`) that runs the iptables/ip rule commands in `ExecStart`, and add matching `ExecStop` lines that delete them. `WantedBy=multi-user.target` keeps them applied during normal boots.
+* **iptables-persistent** – store the mangle table and routing adjustments in `/etc/iptables/rules.v4` and `/etc/iptables/rules.v6` (`iptables-save > /etc/iptables/rules.v4`). The ip rule / ip route commands can go into `/etc/network/if-pre-up.d/` scripts or a systemd unit, depending on your distro.
+* Always pair persistence with a rollback plan (console access or a watchdog timer) so you do not lock yourself out of the machine.
 
 ---
 
