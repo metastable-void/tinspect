@@ -6,6 +6,5 @@ pub(crate) mod tls;
 pub(crate) mod transport;
 pub(crate) mod ws;
 
-pub use context::ProxyState;
 pub use server::{run_port80, run_port443};
 pub use tls::TlsMitmState;

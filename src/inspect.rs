@@ -1,10 +1,10 @@
 pub use crate::packet::SocketInfo;
 pub use crate::tproxy::context::HttpContext;
 pub use crate::tproxy::context::WebSocketContext;
+pub use hickory_proto::rr::domain::Name as DnsName;
 pub use http_body_util::{Empty, Full};
 pub use hyper::body::Bytes;
 pub use hyper::{Request, Response};
-pub use hickory_proto::rr::domain::Name as DnsName;
 
 use std::fmt::Debug;
 use std::net::Ipv4Addr;

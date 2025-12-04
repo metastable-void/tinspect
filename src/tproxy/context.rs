@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::inspect::{
-    DnsAnswer, DnsInspector, DnsQuestion, EmptyRequest, FullRequest, FullResponse, HttpInspector, WebSocketInspector, WebSocketMessage
+    DnsAnswer, DnsInspector, DnsQuestion, EmptyRequest, FullRequest, FullResponse, HttpInspector,
+    WebSocketInspector, WebSocketMessage,
 };
 use crate::packet::SocketInfo;
 
