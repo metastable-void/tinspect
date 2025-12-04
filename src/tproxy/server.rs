@@ -3,6 +3,7 @@ use std::sync::Arc;
 use hyper::Request;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+use hyper::server::conn::http1::UpgradeableConnection;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Builder;
 use tokio::task;
@@ -35,6 +36,7 @@ pub(crate) async fn serve_one_connection<S>(
     if let Err(err) = hyper::server::conn::http1::Builder::new()
         .keep_alive(true)
         .serve_connection(io, service)
+        .with_upgrades()
         .await
     {
         tracing::error!("HTTP/1 connection error: {err}");
