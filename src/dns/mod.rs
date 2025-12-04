@@ -22,15 +22,15 @@ use tracing::warn;
 
 use crate::{
     inspect::{DnsAnswer, DnsQuestion},
-    ProxyState,
+    InspectorRegistry,
 };
 
 const DNS_BUFFER_SIZE: usize = 4096;
 const DEFAULT_TTL: u32 = 30;
 
 /// Run the DNS proxy on port 53, blocking the current thread.
-pub fn run_port53(state: ProxyState) -> std::io::Result<()> {
-    let join = std::thread::spawn(move || {
+pub fn run_port53(state: InspectorRegistry) -> std::io::Result<()> {
+    let join = std::thread::Builder::new().spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
@@ -49,7 +49,7 @@ pub fn run_port53(state: ProxyState) -> std::io::Result<()> {
             Ok(())
         });
         res
-    });
+    })?;
     join.join()
         .map_err(|_e| std::io::Error::other("Join error"))?
 }
@@ -87,7 +87,7 @@ fn make_dual_stack_socket(ty: Type, protocol: Protocol) -> io::Result<Socket> {
 
 async fn serve_udp(
     socket: Arc<UdpSocket>,
-    state: ProxyState,
+    state: InspectorRegistry,
     resolver: Arc<TokioResolver>,
 ) -> io::Result<()> {
     let mut buf = vec![0u8; DNS_BUFFER_SIZE];
@@ -111,7 +111,7 @@ async fn serve_udp(
 
 async fn serve_tcp(
     listener: TcpListener,
-    state: ProxyState,
+    state: InspectorRegistry,
     resolver: Arc<TokioResolver>,
 ) -> io::Result<()> {
     loop {
@@ -128,7 +128,7 @@ async fn serve_tcp(
 
 async fn handle_tcp_stream(
     mut stream: TcpStream,
-    state: ProxyState,
+    state: InspectorRegistry,
     resolver: Arc<TokioResolver>,
 ) -> io::Result<()> {
     loop {
@@ -159,7 +159,7 @@ async fn handle_tcp_stream(
 
 async fn handle_dns_message(
     packet: &[u8],
-    state: &ProxyState,
+    state: &InspectorRegistry,
     resolver: &TokioResolver,
 ) -> Option<Vec<u8>> {
     let request = Message::from_vec(packet).ok()?;
@@ -198,7 +198,7 @@ async fn forward_query(
     processed_question: DnsQuestion,
     original_query: Query,
     mut response: Message,
-    state: &ProxyState,
+    state: &InspectorRegistry,
     resolver: &TokioResolver,
 ) -> Option<Vec<u8>> {
     let mut forward_query = original_query.clone();

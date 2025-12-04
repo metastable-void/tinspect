@@ -25,7 +25,7 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 use crate::inspect::{FullRequest, FullResponse, WebSocketMessage};
 use crate::packet::SocketInfo;
 
-use super::context::{ProxyState, WebSocketContext};
+use super::context::{InspectorRegistry, WebSocketContext};
 use super::http::req_into_full_bytes;
 use super::transport::{
     UpstreamTransport, cast_ws_stream, is_plain_tcp, is_tls_stream, server_name_from_req,
@@ -136,7 +136,7 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
 pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     req: Request<Incoming>,
     sockinfo: SocketInfo,
-    state: ProxyState,
+    state: InspectorRegistry,
 ) -> std::io::Result<()> {
     let req = req_into_full_bytes(req)
         .await

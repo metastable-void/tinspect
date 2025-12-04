@@ -8,15 +8,15 @@ use crate::inspect::{
 };
 use crate::packet::SocketInfo;
 
-/// Shared inspector configuration used to run HTTP/WebSocket hooks.
+/// Shared inspector configuration used to run DNS/HTTP/WebSocket hooks.
 #[derive(Debug, Clone)]
-pub struct ProxyState {
+pub struct InspectorRegistry {
     dns_inspector: Option<Arc<dyn DnsInspector>>,
     websocket_inspector: Option<Arc<dyn WebSocketInspector>>,
     http_inspector: Option<Arc<dyn HttpInspector>>,
 }
 
-impl ProxyState {
+impl InspectorRegistry {
     pub fn new<D: DnsInspector, H: HttpInspector, W: WebSocketInspector>(
         dns_inspector: Option<D>,
         http_inspector: Option<H>,

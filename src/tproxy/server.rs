@@ -11,12 +11,12 @@ use tracing::debug;
 
 use crate::packet::SocketInfo;
 
-use super::context::ProxyState;
+use super::context::InspectorRegistry;
 use super::http::handler;
 use super::net::{bind, get_original_dst, to_maybe_ipv4};
 use super::tls::{TlsMitmState, make_server_config};
 
-pub(crate) async fn serve_one_connection<S>(io: TokioIo<S>, sockinfo: SocketInfo, state: ProxyState)
+pub(crate) async fn serve_one_connection<S>(io: TokioIo<S>, sockinfo: SocketInfo, state: InspectorRegistry)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -39,8 +39,8 @@ where
 }
 
 /// Run the HTTPS MITM listener on port 443, blocking the current thread.
-pub fn run_port443(state: ProxyState, mitm_state: TlsMitmState) -> std::io::Result<()> {
-    let join = std::thread::spawn(move || {
+pub fn run_port443(state: InspectorRegistry, mitm_state: TlsMitmState) -> std::io::Result<()> {
+    let join = std::thread::Builder::new().spawn(move || {
         let rt = Builder::new_multi_thread().enable_all().build()?;
 
         let state_clone = state.clone();
@@ -82,14 +82,14 @@ pub fn run_port443(state: ProxyState, mitm_state: TlsMitmState) -> std::io::Resu
             }
         });
         res
-    });
+    })?;
     join.join()
         .map_err(|_e| std::io::Error::other("Join error"))?
 }
 
 /// Run the HTTP listener on port 80, blocking the current thread.
-pub fn run_port80(state: ProxyState) -> std::io::Result<()> {
-    let join = std::thread::spawn(move || {
+pub fn run_port80(state: InspectorRegistry) -> std::io::Result<()> {
+    let join = std::thread::Builder::new().spawn(move || {
         let rt = Builder::new_multi_thread().enable_all().build()?;
 
         let state_clone = state.clone();
@@ -116,7 +116,7 @@ pub fn run_port80(state: ProxyState) -> std::io::Result<()> {
             }
         });
         res
-    });
+    })?;
     join.join()
         .map_err(|_e| std::io::Error::other("Join error"))?
 }

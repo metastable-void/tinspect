@@ -12,7 +12,7 @@ use tracing::debug;
 
 use crate::packet::SocketInfo;
 
-use super::context::{HttpContext, ProxyState};
+use super::context::{HttpContext, InspectorRegistry};
 use super::transport::{
     UpstreamTransport, is_plain_tcp, is_tls_stream, server_name_from_req, tls_client_config,
 };
@@ -104,7 +104,7 @@ pub async fn res_into_full_bytes(
 pub async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     req: Request<Incoming>,
     sockinfo: SocketInfo,
-    state: ProxyState,
+    state: InspectorRegistry,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
     if is_ws_upgrade(&req) {
         let resp = ws_handshake_response(&req).unwrap_or_else(|| {
