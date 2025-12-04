@@ -3,7 +3,6 @@ use std::sync::Arc;
 use hyper::Request;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use hyper::server::conn::http1::UpgradeableConnection;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Builder;
 use tokio::task;
