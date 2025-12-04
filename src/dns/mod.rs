@@ -10,6 +10,7 @@ use hickory_proto::{
     rr::{
         Name, RData, Record, RecordType,
         dns_class::DNSClass,
+        domain::Name as DomainName,
         rdata::{a::A as RDataA, aaaa::AAAA as RDataAAAA},
     },
 };
@@ -26,6 +27,7 @@ use crate::{
     inspect::{DnsAnswer, DnsQuestion},
 };
 
+const DNS_PORT: u16 = 53;
 const DNS_BUFFER_SIZE: usize = 4096;
 const DEFAULT_TTL: u32 = 30;
 
@@ -61,27 +63,27 @@ fn build_resolver() -> io::Result<TokioResolver> {
 }
 
 fn bind_udp53() -> io::Result<UdpSocket> {
-    let socket = make_dual_stack_socket(Type::DGRAM, Protocol::UDP)?;
+    let socket = make_dual_stack_socket(DNS_PORT, Type::DGRAM, Protocol::UDP)?;
+    socket.set_nonblocking(true)?;
     let udp: std::net::UdpSocket = socket.into();
-    udp.set_nonblocking(true)?;
     UdpSocket::from_std(udp)
 }
 
 fn bind_tcp53() -> io::Result<TcpListener> {
-    let socket = make_dual_stack_socket(Type::STREAM, Protocol::TCP)?;
+    let socket = make_dual_stack_socket(DNS_PORT, Type::STREAM, Protocol::TCP)?;
     socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
     let listener: std::net::TcpListener = socket.into();
-    listener.set_nonblocking(true)?;
     TcpListener::from_std(listener)
 }
 
-fn make_dual_stack_socket(ty: Type, protocol: Protocol) -> io::Result<Socket> {
+fn make_dual_stack_socket(port: u16, ty: Type, protocol: Protocol) -> io::Result<Socket> {
     let socket = Socket::new(Domain::IPV6, ty, Some(protocol))?;
     socket.set_only_v6(false)?;
     socket.set_reuse_address(true)?;
     let _ = socket.set_reuse_port(true);
 
-    let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 53);
+    let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
     socket.bind(&addr.into())?;
     Ok(socket)
 }
@@ -203,6 +205,9 @@ async fn forward_query(
     state: &InspectorRegistry,
     resolver: &TokioResolver,
 ) -> Option<Vec<u8>> {
+    if is_blocked_domain(&processed_question) {
+        return encode_with_code(response, ResponseCode::Refused);
+    }
     let mut forward_query = original_query.clone();
     let (name, record_type) = match &processed_question {
         DnsQuestion::A(name) => (name.clone(), RecordType::A),
@@ -266,6 +271,18 @@ fn dns_question_from_query(query: &Query) -> Option<DnsQuestion> {
         RecordType::A => Some(DnsQuestion::A(query.name().clone())),
         RecordType::AAAA => Some(DnsQuestion::AAAA(query.name().clone())),
         _ => None,
+    }
+}
+
+fn is_blocked_domain(question: &DnsQuestion) -> bool {
+    fn matches(name: &Name, blocked: &str) -> bool {
+        name.to_ascii().trim_end_matches('.').eq_ignore_ascii_case(blocked)
+    }
+
+    match question {
+        DnsQuestion::A(name) | DnsQuestion::AAAA(name) => {
+            matches(name, "mask.icloud.com") || matches(name, "mask-h2.icloud.com")
+        }
     }
 }
 
