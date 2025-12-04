@@ -10,7 +10,6 @@ use hickory_proto::{
     rr::{
         Name, RData, Record, RecordType,
         dns_class::DNSClass,
-        domain::Name as DomainName,
         rdata::{a::A as RDataA, aaaa::AAAA as RDataAAAA},
     },
 };
