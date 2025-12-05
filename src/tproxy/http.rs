@@ -17,8 +17,8 @@ use crate::packet::SocketInfo;
 
 use super::context::{HttpContext, InspectorRegistry};
 use super::transport::{
-    UpstreamTransport, authority_from_request, is_plain_tcp, is_tls_stream, server_name_from_req,
-    tls_http_client_config,
+    UpstreamTransport, authority_from_request, canonical_host_header, is_plain_tcp, is_tls_stream,
+    server_name_from_req, tls_http_client_config,
 };
 use super::ws::{h2_ws_handshake_response, handle_ws, is_ws_upgrade, ws_handshake_response};
 
@@ -218,10 +218,10 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
     let default_authority = sockinfo.server_addr.to_string();
     let authority = authority_from_request(&req, &default_authority);
-    if req.headers().get(HOST).is_none() {
-        if let Ok(value) = HeaderValue::from_str(&authority) {
-            req.headers_mut().insert(HOST, value);
-        }
+    let scheme = if is_tls { "https" } else { "http" };
+    let host_header = canonical_host_header(&authority, scheme);
+    if let Ok(value) = HeaderValue::from_str(&host_header) {
+        req.headers_mut().insert(HOST, value);
     }
     let path = req
         .uri()

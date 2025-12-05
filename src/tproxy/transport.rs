@@ -37,11 +37,30 @@ pub(crate) fn authority_from_request<B>(req: &Request<B>, default: &str) -> Stri
         return host.to_string();
     }
 
-    if let Some(host) = req.uri().host() {
-        return host.to_string();
-    }
-
     default.to_string()
+}
+
+pub(crate) fn canonical_host_header(authority: &str, scheme: &str) -> String {
+    use hyper::http::uri::Authority;
+    use std::str::FromStr;
+
+    if let Ok(auth) = Authority::from_str(authority) {
+        if let Some(port) = auth.port_u16() {
+            let default_port = match scheme {
+                "https" | "wss" => 443,
+                _ => 80,
+            };
+            if port == default_port {
+                let host = auth.host();
+                if host.contains(':') {
+                    return format!("[{}]", host);
+                }
+                return host.to_string();
+            }
+        }
+        return auth.to_string();
+    }
+    authority.to_string()
 }
 
 pub(crate) fn server_name_from_req<B>(
