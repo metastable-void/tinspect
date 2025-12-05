@@ -3,13 +3,14 @@ use std::{io, sync::Arc};
 use bytes::BytesMut;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
-use hyper::{Request, Response, StatusCode};
+use hyper::ext::Protocol;
+use hyper::{Method, Request, Response, StatusCode, Version};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::task;
 use tokio_rustls::{TlsConnector, TlsStream};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::packet::SocketInfo;
 
@@ -20,6 +21,19 @@ use super::transport::{
 use super::ws::{handle_ws, is_ws_upgrade, ws_handshake_response};
 
 const BODY_SIZE_LIMIT: usize = 100 * 1024 * 1024;
+
+fn is_h2_ws_connect<B>(req: &Request<B>) -> bool {
+    if req.version() != Version::HTTP_2 {
+        return false;
+    }
+    if req.method() != Method::CONNECT {
+        return false;
+    }
+    match req.extensions().get::<Protocol>() {
+        Some(proto) => proto.as_str().eq_ignore_ascii_case("websocket"),
+        None => false,
+    }
+}
 
 pub(crate) async fn build_client(
     remote_addr: std::net::SocketAddr,
@@ -128,6 +142,19 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     sockinfo: SocketInfo,
     state: InspectorRegistry,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    if is_h2_ws_connect(&req) {
+        warn!(
+            client = %sockinfo.client_addr,
+            server = %sockinfo.server_addr,
+            "HTTP/2 WebSocket CONNECT not yet implemented"
+        );
+        let res = Response::builder()
+            .status(StatusCode::NOT_IMPLEMENTED)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        return Ok(res);
+    }
+
     if is_ws_upgrade(&req) {
         let resp = ws_handshake_response(&req).unwrap_or_else(|| {
             Response::builder()

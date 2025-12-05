@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use hyper::Request;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Builder;
 use tokio::task;
@@ -17,7 +17,7 @@ use super::http::handler;
 use super::net::{bind, get_original_dst, to_maybe_ipv4};
 use super::tls::{TlsMitmState, make_server_config};
 
-pub(crate) async fn serve_one_connection<S>(
+pub(crate) async fn serve_http1_connection<S>(
     io: TokioIo<S>,
     sockinfo: SocketInfo,
     state: InspectorRegistry,
@@ -40,6 +40,30 @@ pub(crate) async fn serve_one_connection<S>(
         .await
     {
         tracing::error!("HTTP/1 connection error: {err}");
+    }
+}
+
+pub(crate) async fn serve_http2_connection<S>(
+    io: TokioIo<S>,
+    sockinfo: SocketInfo,
+    state: InspectorRegistry,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let sockinfo_conn = sockinfo.clone();
+    let state_conn = state.clone();
+
+    let service = service_fn(move |req: Request<hyper::body::Incoming>| {
+        let sockinfo = sockinfo_conn.clone();
+        let state = state_conn.clone();
+        async move { handler::<S>(req, sockinfo, state).await }
+    });
+
+    if let Err(err) = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+        .serve_connection(io, service)
+        .await
+    {
+        tracing::error!("HTTP/2 connection error: {err}");
     }
 }
 
@@ -104,8 +128,16 @@ pub fn run_port443(state: InspectorRegistry, mitm_state: TlsMitmState) -> std::i
                     };
 
                     let tls_stream = TlsStream::from(tls_stream);
+                    let alpn_proto = tls_stream
+                        .get_ref()
+                        .1
+                        .alpn_protocol()
+                        .map(|proto| proto.to_vec());
                     let io = TokioIo::new(tls_stream);
-                    serve_one_connection(io, sockinfo, state).await;
+                    match alpn_proto.as_deref() {
+                        Some(b"h2") => serve_http2_connection(io, sockinfo, state).await,
+                        _ => serve_http1_connection(io, sockinfo, state).await,
+                    }
                 });
             }
         });
@@ -140,7 +172,7 @@ pub fn run_port80(state: InspectorRegistry) -> std::io::Result<()> {
                 );
 
                 let io = TokioIo::new(stream);
-                task::spawn(serve_one_connection(io, sockinfo, state));
+                task::spawn(serve_http1_connection(io, sockinfo, state));
             }
         });
         res

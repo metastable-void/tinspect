@@ -135,6 +135,7 @@ pub(crate) fn make_server_config(state: TlsMitmState) -> ServerConfig {
         .with_no_client_auth()
         .with_cert_resolver(resolver);
 
+    config.alpn_protocols.push(b"h2".to_vec());
     config.alpn_protocols.push(b"http/1.1".to_vec());
 
     config
