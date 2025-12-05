@@ -223,6 +223,7 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     if let Ok(value) = HeaderValue::from_str(&host_header) {
         req.headers_mut().insert(HOST, value);
     }
+    *req.version_mut() = Version::HTTP_11;
     let path = req
         .uri()
         .path_and_query()
