@@ -26,7 +26,7 @@ use crate::packet::SocketInfo;
 
 use super::context::{InspectorRegistry, WebSocketContext};
 use super::http::req_into_full_bytes;
-use super::transport::{UpstreamTransport, server_name_from_req, tls_client_config};
+use super::transport::{UpstreamTransport, server_name_from_req, tls_ws_client_config};
 
 const WEBSOCKET_ACCEPT_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -155,7 +155,7 @@ pub async fn create_upstream_ws(
                 "Dialing upstream WebSocket over TLS"
             );
             let tcp_stream = TcpStream::connect(sockinfo.server_addr).await?;
-            let connector = TlsConnector::from(tls_client_config().clone());
+            let connector = TlsConnector::from(tls_ws_client_config().clone());
             let tls_stream = connector
                 .connect(server_name, tcp_stream)
                 .await

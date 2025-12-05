@@ -16,7 +16,7 @@ use crate::packet::SocketInfo;
 
 use super::context::{HttpContext, InspectorRegistry};
 use super::transport::{
-    UpstreamTransport, is_plain_tcp, is_tls_stream, server_name_from_req, tls_client_config,
+    UpstreamTransport, is_plain_tcp, is_tls_stream, server_name_from_req, tls_http_client_config,
 };
 use super::ws::{h2_ws_handshake_response, handle_ws, is_ws_upgrade, ws_handshake_response};
 
@@ -68,7 +68,7 @@ pub(crate) async fn build_client(
                 sni = %sni,
                 "Connecting upstream HTTP client over TLS"
             );
-            let connector = TlsConnector::from(tls_client_config().clone());
+            let connector = TlsConnector::from(tls_http_client_config().clone());
             let tls_stream = connector
                 .connect(server_name, stream)
                 .await
