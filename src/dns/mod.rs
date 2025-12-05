@@ -180,12 +180,12 @@ async fn handle_dns_message(
         None => return encode_with_code(response, ResponseCode::NotImp),
     };
 
-    match state.process_dns_question(dns_question) {
+    match state.process_dns_question(dns_question).await {
         Ok(processed_question) => {
             forward_query(processed_question, query, response, state, resolver).await
         }
         Err(answers) => {
-            let answers = state.process_dns_answer(answers);
+            let answers = state.process_dns_answer(answers).await;
             let ttl_map = HashMap::new();
             let records = answers_to_records(&answers, &ttl_map);
             let mut resp = response;
@@ -229,7 +229,7 @@ async fn forward_query(
 
     let upstream_records = collect_relevant_records(&lookup);
     let (flattened_answers, ttl_map) = flatten_answers(&upstream_records, &name);
-    let inspected_answers = state.process_dns_answer(flattened_answers);
+    let inspected_answers = state.process_dns_answer(flattened_answers).await;
     let final_records = answers_to_records(&inspected_answers, &ttl_map);
     for record in final_records {
         response.add_answer(record);

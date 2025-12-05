@@ -268,7 +268,7 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let empty_req_for_request = Arc::new(empty_req_ws);
     let http_ctx_req = HttpContext::new(is_tls, sockinfo, empty_req_for_request.clone());
 
-    let mut req = match state.process_http_request(req, http_ctx_req) {
+    let mut req = match state.process_http_request(req, http_ctx_req).await {
         Err(res) => return Ok(res),
         Ok(req) => req,
     };
@@ -367,7 +367,7 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         Ok(res) => res,
     };
 
-    let res = state.process_http_response(res, http_ctx_resp);
+    let res = state.process_http_response(res, http_ctx_resp).await;
 
     Ok(res)
 }

@@ -32,57 +32,60 @@ impl InspectorRegistry {
         }
     }
 
-    pub fn process_websocket_client_msg(
+    pub async fn process_websocket_client_msg(
         &self,
         msg: WebSocketMessage,
         ctx: WebSocketContext,
     ) -> Option<WebSocketMessage> {
         match self.websocket_inspector.clone() {
             None => Some(msg),
-            Some(i) => i.inspect_client_msg(msg, ctx),
+            Some(i) => i.inspect_client_msg(msg, ctx).await,
         }
     }
 
-    pub fn process_websocket_server_msg(
+    pub async fn process_websocket_server_msg(
         &self,
         msg: WebSocketMessage,
         ctx: WebSocketContext,
     ) -> Option<WebSocketMessage> {
         match self.websocket_inspector.clone() {
             None => Some(msg),
-            Some(i) => i.inspect_server_msg(msg, ctx),
+            Some(i) => i.inspect_server_msg(msg, ctx).await,
         }
     }
 
-    pub fn process_http_request(
+    pub async fn process_http_request(
         &self,
         req: FullRequest,
         ctx: HttpContext,
     ) -> Result<FullRequest, FullResponse> {
         match self.http_inspector.clone() {
             None => Ok(req),
-            Some(i) => i.inspect_request(req, ctx),
+            Some(i) => i.inspect_request(req, ctx).await,
         }
     }
 
-    pub fn process_http_response(&self, res: FullResponse, ctx: HttpContext) -> FullResponse {
+    pub async fn process_http_response(&self, res: FullResponse, ctx: HttpContext) -> FullResponse {
         match self.http_inspector.clone() {
             None => res,
-            Some(i) => i.inspect_response(res, ctx),
+            Some(i) => i.inspect_response(res, ctx).await,
         }
     }
 
-    pub fn process_dns_question(&self, q: DnsQuestion) -> Result<DnsQuestion, Vec<DnsAnswer>> {
+    pub async fn process_dns_question(
+        &self,
+        q: DnsQuestion,
+    ) -> Result<DnsQuestion, Vec<DnsAnswer>> {
         match self.dns_inspector.clone() {
             None => Ok(q),
-            Some(i) => i.inspect_question(q),
+            Some(i) => i.inspect_question(q).await,
         }
     }
 
-    pub fn process_dns_answer(&self, a: Vec<DnsAnswer>) -> Vec<DnsAnswer> {
+    pub async fn process_dns_answer(&self, a: Vec<DnsAnswer>) -> Vec<DnsAnswer> {
         match self.dns_inspector.clone() {
             None => a,
-            Some(i) => i.inspect_answer(a),
+            Some(i) => i.inspect_answer(a).await,
         }
     }
 }

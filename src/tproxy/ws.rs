@@ -573,7 +573,9 @@ pub async fn handle_ws(
                     Message::Text(t) => {
                         let s = t.as_str().to_string();
                         let msg = WebSocketMessage::Text(s);
-                        let msg = state.process_websocket_client_msg(msg, ctx.clone());
+                        let msg = state
+                            .process_websocket_client_msg(msg, ctx.clone())
+                            .await;
                         let msg = if let Some(m) = msg { m } else { continue; };
                         let msg = to_native_msg(msg);
                         ws_upstream.send(msg).await.map_err(|e| std::io::Error::other(e))?;
@@ -581,7 +583,9 @@ pub async fn handle_ws(
                     Message::Binary(b) => {
                         let v = b.to_vec();
                         let msg = WebSocketMessage::Binary(v);
-                        let msg = state.process_websocket_client_msg(msg, ctx.clone());
+                        let msg = state
+                            .process_websocket_client_msg(msg, ctx.clone())
+                            .await;
                         let msg = if let Some(m) = msg { m } else { continue; };
                         let msg = to_native_msg(msg);
                         ws_upstream.send(msg).await.map_err(|e| std::io::Error::other(e))?;
@@ -607,7 +611,9 @@ pub async fn handle_ws(
                     Message::Text(t) => {
                         let s = t.as_str().to_string();
                         let msg = WebSocketMessage::Text(s);
-                        let msg = state.process_websocket_server_msg(msg, ctx.clone());
+                        let msg = state
+                            .process_websocket_server_msg(msg, ctx.clone())
+                            .await;
                         let msg = if let Some(m) = msg { m } else { continue; };
                         let msg = to_native_msg(msg);
                         ws.send(msg).await.map_err(|e| std::io::Error::other(e))?;
@@ -615,7 +621,9 @@ pub async fn handle_ws(
                     Message::Binary(b) => {
                         let v = b.to_vec();
                         let msg = WebSocketMessage::Binary(v);
-                        let msg = state.process_websocket_server_msg(msg, ctx.clone());
+                        let msg = state
+                            .process_websocket_server_msg(msg, ctx.clone())
+                            .await;
                         let msg = if let Some(m) = msg { m } else { continue; };
                         let msg = to_native_msg(msg);
                         ws.send(msg).await.map_err(|e| std::io::Error::other(e))?;
