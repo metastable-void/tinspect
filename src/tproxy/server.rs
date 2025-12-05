@@ -59,10 +59,10 @@ pub(crate) async fn serve_http2_connection<S>(
         async move { handler::<S>(req, sockinfo, state).await }
     });
 
-    if let Err(err) = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-        .serve_connection(io, service)
-        .await
-    {
+    let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
+    builder.enable_connect_protocol();
+
+    if let Err(err) = builder.serve_connection(io, service).await {
         tracing::error!("HTTP/2 connection error: {err}");
     }
 }

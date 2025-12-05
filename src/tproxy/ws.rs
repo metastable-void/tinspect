@@ -11,26 +11,22 @@ use hyper::upgrade;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use sha1::{Digest, Sha1};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::time::{Duration, interval};
-use tokio_rustls::{TlsConnector, TlsStream};
+use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::client::Response as WsClientResponse;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::protocol::frame::Utf8Bytes;
-use tokio_tungstenite::{WebSocketStream, client_async};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async};
 
 use crate::inspect::{FullRequest, FullResponse, WebSocketMessage};
 use crate::packet::SocketInfo;
 
 use super::context::{InspectorRegistry, WebSocketContext};
 use super::http::req_into_full_bytes;
-use super::transport::{
-    UpstreamTransport, cast_ws_stream, is_plain_tcp, is_tls_stream, server_name_from_req,
-    tls_client_config,
-};
+use super::transport::{UpstreamTransport, server_name_from_req, tls_client_config};
 
 const WEBSOCKET_ACCEPT_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -105,22 +101,19 @@ fn websocket_accept_value<B>(req: &Request<B>) -> Option<String> {
     Some(BASE64.encode(sha.finalize()))
 }
 
-pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+pub async fn create_upstream_ws(
     req: FullRequest,
     sockinfo: SocketInfo,
-) -> std::io::Result<(FullResponse, WebSocketStream<S>)> {
-    let transport = if is_plain_tcp::<S>() {
-        UpstreamTransport::Plain
-    } else if is_tls_stream::<S>() {
+    is_tls: bool,
+) -> std::io::Result<(FullResponse, WebSocketStream<MaybeTlsStream<TcpStream>>)> {
+    let transport = if is_tls {
         let server_name = server_name_from_req(&req, &sockinfo)?;
         UpstreamTransport::Tls(server_name)
     } else {
-        return Err(std::io::Error::other(
-            "unsupported upstream websocket transport type",
-        ));
+        UpstreamTransport::Plain
     };
 
-    let ws_req = req.map(|_| ());
+    let mut ws_req = req.map(|_| ());
     let host = host_for_req(&ws_req, &sockinfo);
     let path = ws_req
         .uri()
@@ -128,8 +121,8 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
 
-    match (transport, ws_req) {
-        (UpstreamTransport::Plain, mut ws_req) => {
+    match transport {
+        UpstreamTransport::Plain => {
             let uri = format!("ws://{}{}", host, path);
             *ws_req.uri_mut() = uri
                 .parse()
@@ -139,14 +132,14 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                 "Dialing upstream WebSocket over plain TCP"
             );
             let stream = TcpStream::connect(sockinfo.server_addr).await?;
+            let stream = MaybeTlsStream::Plain(stream);
             let (ws_stream, res) = client_async(ws_req, stream)
                 .await
                 .map_err(|e| std::io::Error::other(e))?;
             let res = into_full_response(res);
-            let ws_stream = cast_ws_stream::<S, TcpStream>(ws_stream);
             Ok((res, ws_stream))
         }
-        (UpstreamTransport::Tls(server_name), mut ws_req) => {
+        UpstreamTransport::Tls(server_name) => {
             let uri = format!("wss://{}{}", host, path);
             *ws_req.uri_mut() = uri
                 .parse()
@@ -163,46 +156,35 @@ pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                 .connect(server_name, tcp_stream)
                 .await
                 .map_err(|e| std::io::Error::other(e))?;
-            let tls_stream = TlsStream::from(tls_stream);
-            let (ws_stream, res) = client_async(ws_req, tls_stream)
+            let stream = MaybeTlsStream::Rustls(tls_stream);
+            let (ws_stream, res) = client_async(ws_req, stream)
                 .await
                 .map_err(|e| std::io::Error::other(e))?;
             let res = into_full_response(res);
-            let ws_stream = cast_ws_stream::<S, TlsStream<TcpStream>>(ws_stream);
             Ok((res, ws_stream))
         }
     }
 }
 
-pub async fn handle_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+pub async fn handle_ws(
     req: Request<Incoming>,
     sockinfo: SocketInfo,
     state: InspectorRegistry,
+    is_tls: bool,
 ) -> std::io::Result<()> {
     let req = req_into_full_bytes(req).await?;
     let req_for_upstream = req.clone();
     let req_for_ctx = req.clone();
 
-    let upgraded = upgrade::on(req)
-        .await
-        .map_err(|e| {
-            tracing::error!(?e, "WS Upgrade error");
-            std::io::Error::other("Upgrade error")
-        })?
-        .downcast::<TokioIo<S>>()
-        .map_err(|e| {
-            tracing::error!(?e, "WS Upgrade downcast error");
-            std::io::Error::other("Upgrade downcast error")
-        })?
-        .io
-        .into_inner();
+    let upgraded = upgrade::on(req).await.map_err(|e| {
+        tracing::error!(?e, "WS Upgrade error");
+        std::io::Error::other("Upgrade error")
+    })?;
+    let mut ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
 
-    let mut ws = WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
-
-    let (res, mut ws_upstream) = create_upstream_ws::<S>(req_for_upstream, sockinfo).await?;
+    let (res, mut ws_upstream) = create_upstream_ws(req_for_upstream, sockinfo, is_tls).await?;
 
     let mut ticker = interval(Duration::from_secs(15));
-    let is_tls = !is_plain_tcp::<S>();
 
     let (tx_server, mut rx_server) = tokio::sync::mpsc::unbounded_channel();
     let (tx_client, mut rx_client) = tokio::sync::mpsc::unbounded_channel();

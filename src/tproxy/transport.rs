@@ -1,6 +1,4 @@
 use std::any::TypeId;
-use std::mem::ManuallyDrop;
-use std::ptr;
 use std::sync::{Arc, OnceLock};
 
 use hyper::Request;
@@ -8,7 +6,6 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsStream;
-use tokio_tungstenite::WebSocketStream;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::packet::SocketInfo;
@@ -65,10 +62,4 @@ pub(crate) fn is_plain_tcp<S: 'static>() -> bool {
 
 pub(crate) fn is_tls_stream<S: 'static>() -> bool {
     TypeId::of::<S>() == TypeId::of::<TlsStream<TcpStream>>()
-}
-
-pub(crate) fn cast_ws_stream<S: 'static, T: 'static>(ws: WebSocketStream<T>) -> WebSocketStream<S> {
-    debug_assert_eq!(TypeId::of::<S>(), TypeId::of::<T>());
-    let ws = ManuallyDrop::new(ws);
-    unsafe { ptr::read((&*ws as *const WebSocketStream<T>).cast::<WebSocketStream<S>>()) }
 }

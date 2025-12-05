@@ -142,6 +142,10 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     sockinfo: SocketInfo,
     state: InspectorRegistry,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let is_tls = !is_plain_tcp::<S>();
+    let is_tls_2 = is_tls_stream::<S>();
+    debug_assert_eq!(is_tls, is_tls_2, "Unsupported transport");
+
     if is_h2_ws_connect(&req) {
         let resp = h2_ws_handshake_response(&req).unwrap_or_else(|| {
             Response::builder()
@@ -153,8 +157,9 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         let ws_req = req;
         let state_clone = state.clone();
         let sockinfo_clone = sockinfo.clone();
+        let is_tls_conn = is_tls;
         task::spawn(async move {
-            if let Err(e) = handle_ws::<S>(ws_req, sockinfo_clone, state_clone).await {
+            if let Err(e) = handle_ws(ws_req, sockinfo_clone, state_clone, is_tls_conn).await {
                 tracing::error!("WS error: {e}");
             }
         });
@@ -173,8 +178,9 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         let ws_req = req;
         let state_clone = state.clone();
         let sockinfo_clone = sockinfo.clone();
+        let is_tls_conn = is_tls;
         task::spawn(async move {
-            if let Err(e) = handle_ws::<S>(ws_req, sockinfo_clone, state_clone).await {
+            if let Err(e) = handle_ws(ws_req, sockinfo_clone, state_clone, is_tls_conn).await {
                 tracing::error!("WS error: {e}");
             }
         });
@@ -201,9 +207,6 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let (req_full, empty_req_ws) = req_into_empty(req);
     let req = req_full;
     let empty_req_for_request = Arc::new(empty_req_ws);
-    let is_tls = !is_plain_tcp::<S>();
-    let is_tls_2 = is_tls_stream::<S>();
-    debug_assert_eq!(is_tls, is_tls_2, "Unsupported transport");
     let http_ctx_req = HttpContext::new(is_tls, sockinfo, empty_req_for_request.clone());
 
     let req = match state.process_http_request(req, http_ctx_req) {
