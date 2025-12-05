@@ -108,6 +108,10 @@ impl TlsMitmState {
 
         Ok(ck)
     }
+
+    pub(crate) fn crypto_provider(&self) -> Arc<CryptoProvider> {
+        self.crypto.clone()
+    }
 }
 
 impl ResolvesServerCert for TlsMitmState {
@@ -122,9 +126,14 @@ impl ResolvesServerCert for TlsMitmState {
 }
 
 pub(crate) fn make_server_config(state: TlsMitmState) -> ServerConfig {
-    let mut config = ServerConfig::builder()
+    let crypto = state.crypto_provider();
+    let resolver = Arc::new(state);
+
+    let mut config = ServerConfig::builder_with_provider(crypto)
+        .with_safe_default_protocol_versions()
+        .expect("crypto provider must support TLS1.2 or newer")
         .with_no_client_auth()
-        .with_cert_resolver(Arc::new(state));
+        .with_cert_resolver(resolver);
 
     config.alpn_protocols.push(b"http/1.1".to_vec());
 
