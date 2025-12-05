@@ -275,7 +275,9 @@ fn dns_question_from_query(query: &Query) -> Option<DnsQuestion> {
 
 fn is_blocked_domain(question: &DnsQuestion) -> bool {
     fn matches(name: &Name, blocked: &str) -> bool {
-        name.to_ascii().trim_end_matches('.').eq_ignore_ascii_case(blocked)
+        name.to_ascii()
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case(blocked)
     }
 
     match question {

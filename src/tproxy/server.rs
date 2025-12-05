@@ -6,7 +6,8 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Builder;
 use tokio::task;
-use tokio_rustls::{TlsAcceptor, TlsStream};
+use tokio_rustls::rustls::server::Acceptor as RustlsAcceptor;
+use tokio_rustls::{LazyConfigAcceptor, TlsAcceptor, TlsStream};
 use tracing::{debug, error};
 
 use crate::packet::SocketInfo;
@@ -71,13 +72,31 @@ pub fn run_port443(state: InspectorRegistry, mitm_state: TlsMitmState) -> std::i
                 );
 
                 task::spawn(async move {
-                    let tls_stream = match tls_acceptor.accept(stream).await {
+                    let start =
+                        match LazyConfigAcceptor::new(RustlsAcceptor::default(), stream).await {
+                            Ok(start) => start,
+                            Err(err) => {
+                                error!(
+                                    client = %sockinfo.client_addr,
+                                    server = %sockinfo.server_addr,
+                                    "failed to read tls client hello: {err:#}"
+                                );
+                                return;
+                            }
+                        };
+
+                    let sni = start
+                        .client_hello()
+                        .server_name()
+                        .map(|name| name.to_owned());
+
+                    let tls_stream = match start.into_stream(tls_acceptor.config().clone()).await {
                         Ok(tls_stream) => tls_stream,
                         Err(err) => {
-                            // TODO: how to log SNI info?
                             error!(
                                 client = %sockinfo.client_addr,
                                 server = %sockinfo.server_addr,
+                                sni = sni.as_deref().unwrap_or("<missing>"),
                                 "failed to perform tls handshake: {err:#}"
                             );
                             return;
