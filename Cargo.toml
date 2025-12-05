@@ -21,6 +21,7 @@ hyper = { version = "1", features = ["full", "http1", "http2"] }
 hyper-util = { version = "0.1.19", features = ["full"] }
 lru = "0.16.2"
 libc = "0.2.178"
+h2 = "0.4"
 rcgen = { version = "0.14.5", default-features = false, features = ["crypto", "aws_lc_rs", "pem", "x509-parser"] }
 rustls = "0.23.35"
 rustls-pemfile = "2.2.0"
@@ -31,6 +32,7 @@ tokio-rustls = "0.26.4"
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1.43"
 webpki-roots = "1.0.4"
+pin-project-lite = "0.2.14"
 
 [dev-dependencies]
 clap = { version = "4.5", features = ["derive"] }

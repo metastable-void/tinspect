@@ -91,6 +91,11 @@ pub(crate) fn tls_http_client_config() -> &'static Arc<ClientConfig> {
 
 pub(crate) fn tls_ws_client_config() -> &'static Arc<ClientConfig> {
     static CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    CLIENT_CONFIG.get_or_init(|| build_client_config(&[b"h2", b"http/1.1"]))
+}
+
+pub(crate) fn tls_ws_http1_config() -> &'static Arc<ClientConfig> {
+    static CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
     CLIENT_CONFIG.get_or_init(|| build_client_config(&[b"http/1.1"]))
 }
 

@@ -6,7 +6,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::ext::Protocol;
 use hyper::header::{HOST, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode, Uri, Version};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::task;
@@ -24,6 +24,36 @@ use super::ws::{h2_ws_handshake_response, handle_ws, is_ws_upgrade, ws_handshake
 
 const BODY_SIZE_LIMIT: usize = 100 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpstreamProtocol {
+    Http1,
+    Http2,
+}
+
+enum UpstreamClient {
+    Http1(hyper::client::conn::http1::SendRequest<Full<Bytes>>),
+    Http2(hyper::client::conn::http2::SendRequest<Full<Bytes>>),
+}
+
+impl UpstreamClient {
+    fn protocol(&self) -> UpstreamProtocol {
+        match self {
+            UpstreamClient::Http1(_) => UpstreamProtocol::Http1,
+            UpstreamClient::Http2(_) => UpstreamProtocol::Http2,
+        }
+    }
+
+    async fn send_request(
+        &mut self,
+        req: Request<Full<Bytes>>,
+    ) -> Result<Response<Incoming>, hyper::Error> {
+        match self {
+            UpstreamClient::Http1(sender) => sender.send_request(req).await,
+            UpstreamClient::Http2(sender) => sender.send_request(req).await,
+        }
+    }
+}
+
 fn is_h2_ws_connect<B>(req: &Request<B>) -> bool {
     if req.version() != Version::HTTP_2 {
         return false;
@@ -37,10 +67,10 @@ fn is_h2_ws_connect<B>(req: &Request<B>) -> bool {
     }
 }
 
-pub(crate) async fn build_client(
+async fn build_client(
     remote_addr: std::net::SocketAddr,
     transport: UpstreamTransport,
-) -> std::io::Result<hyper::client::conn::http1::SendRequest<Full<Bytes>>> {
+) -> std::io::Result<UpstreamClient> {
     let stream = TcpStream::connect(remote_addr).await?;
     match transport {
         UpstreamTransport::Plain => {
@@ -49,18 +79,7 @@ pub(crate) async fn build_client(
                 "Connecting upstream HTTP client over plain TCP"
             );
             let io = TokioIo::new(stream);
-
-            let (sender, conn) = hyper::client::conn::http1::handshake(io)
-                .await
-                .map_err(|e| std::io::Error::other(e))?;
-
-            task::spawn(async move {
-                if let Err(err) = conn.await {
-                    tracing::error!("Connection failed: {:?}", err);
-                }
-            });
-
-            Ok(sender)
+            build_http1_client(io).await
         }
 
         UpstreamTransport::Tls(server_name) => {
@@ -75,22 +94,60 @@ pub(crate) async fn build_client(
                 .connect(server_name, stream)
                 .await
                 .map_err(|e| std::io::Error::other(e))?;
+            let negotiated_alpn = tls_stream
+                .get_ref()
+                .1
+                .alpn_protocol()
+                .map(|proto| proto.to_vec());
             let tls_stream = TlsStream::from(tls_stream);
             let io = TokioIo::new(tls_stream);
 
-            let (sender, conn) = hyper::client::conn::http1::handshake(io)
-                .await
-                .map_err(|e| std::io::Error::other(e))?;
-
-            task::spawn(async move {
-                if let Err(err) = conn.await {
-                    tracing::error!("Connection failed: {:?}", err);
-                }
-            });
-
-            Ok(sender)
+            if negotiated_alpn
+                .as_deref()
+                .map(|proto| proto == b"h2")
+                .unwrap_or(false)
+            {
+                build_http2_client(io).await
+            } else {
+                build_http1_client(io).await
+            }
         }
     }
+}
+
+async fn build_http1_client<I>(io: TokioIo<I>) -> std::io::Result<UpstreamClient>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .map_err(|e| std::io::Error::other(e))?;
+
+    task::spawn(async move {
+        if let Err(err) = conn.await {
+            tracing::error!("Upstream HTTP/1 connection failed: {:?}", err);
+        }
+    });
+
+    Ok(UpstreamClient::Http1(sender))
+}
+
+async fn build_http2_client<I>(io: TokioIo<I>) -> std::io::Result<UpstreamClient>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(io)
+        .await
+        .map_err(|e| std::io::Error::other(e))?;
+
+    task::spawn(async move {
+        if let Err(err) = conn.await {
+            tracing::error!("Upstream HTTP/2 connection failed: {:?}", err);
+        }
+    });
+
+    Ok(UpstreamClient::Http2(sender))
 }
 
 async fn collect_body_with_limit(mut body: Incoming) -> io::Result<Bytes> {
@@ -223,23 +280,8 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     if let Ok(value) = HeaderValue::from_str(&host_header) {
         req.headers_mut().insert(HOST, value);
     }
-    *req.version_mut() = Version::HTTP_11;
-    let path = req
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str().to_string())
-        .unwrap_or_else(|| "/".to_string());
-    *req.uri_mut() = path
-        .parse::<Uri>()
-        .unwrap_or_else(|_| Uri::from_static("/"));
-
-    let (req, empty_req_after) = req_into_empty(req);
-    let empty_req = Arc::new(empty_req_after);
-
-    let http_ctx_resp = HttpContext::new(is_tls, sockinfo, empty_req.clone());
-
     let upstream_transport = if is_tls {
-        match server_name_from_req(empty_req.as_ref(), &sockinfo) {
+        match server_name_from_req(&req, &sockinfo) {
             Err(_e) => {
                 let res = Response::builder()
                     .status(400)
@@ -253,7 +295,7 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         UpstreamTransport::Plain
     };
 
-    let mut client = match build_client(sockinfo.server_addr, upstream_transport.clone()).await {
+    let mut client = match build_client(sockinfo.server_addr, upstream_transport).await {
         Err(_e) => {
             let res = Response::builder()
                 .status(400)
@@ -263,6 +305,40 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         }
         Ok(c) => c,
     };
+
+    let upstream_protocol = client.protocol();
+    match upstream_protocol {
+        UpstreamProtocol::Http1 => {
+            *req.version_mut() = Version::HTTP_11;
+            let path = req
+                .uri()
+                .path_and_query()
+                .map(|pq| pq.as_str().to_string())
+                .unwrap_or_else(|| "/".to_string());
+            *req.uri_mut() = path
+                .parse::<Uri>()
+                .unwrap_or_else(|_| Uri::from_static("/"));
+        }
+        UpstreamProtocol::Http2 => {
+            *req.version_mut() = Version::HTTP_2;
+            if req.uri().scheme().is_none() {
+                let path = req
+                    .uri()
+                    .path_and_query()
+                    .map(|pq| pq.as_str())
+                    .unwrap_or("/");
+                let absolute = format!("{scheme}://{authority}{path}");
+                if let Ok(uri) = absolute.parse::<Uri>() {
+                    *req.uri_mut() = uri;
+                }
+            }
+        }
+    }
+
+    let (req, empty_req_after) = req_into_empty(req);
+    let empty_req = Arc::new(empty_req_after);
+
+    let http_ctx_resp = HttpContext::new(is_tls, sockinfo, empty_req.clone());
 
     let res = match client.send_request(req).await {
         Err(_e) => {
