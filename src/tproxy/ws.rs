@@ -31,6 +31,10 @@ use super::transport::{UpstreamTransport, server_name_from_req, tls_client_confi
 const WEBSOCKET_ACCEPT_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 fn host_for_req<B>(req: &Request<B>, sockinfo: &SocketInfo) -> String {
+    if let Some(authority) = req.uri().authority() {
+        return authority.as_str().to_string();
+    }
+
     if let Some(host) = req.uri().host() {
         return host.to_string();
     }

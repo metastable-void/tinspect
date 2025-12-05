@@ -32,7 +32,9 @@ pub(crate) fn server_name_from_req<B>(
     req: &Request<B>,
     sockinfo: &SocketInfo,
 ) -> std::io::Result<ServerName<'static>> {
-    let host = if let Some(host) = req.uri().host() {
+    let host = if let Some(authority) = req.uri().authority() {
+        normalize_host(authority.as_str())
+    } else if let Some(host) = req.uri().host() {
         host.to_string()
     } else if let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok()) {
         normalize_host(host)
@@ -44,16 +46,25 @@ pub(crate) fn server_name_from_req<B>(
         .map_err(|_| std::io::Error::other("invalid server name for TLS upstream"))
 }
 
-pub(crate) fn tls_client_config() -> &'static Arc<ClientConfig> {
+fn build_client_config(alpns: &[&[u8]]) -> Arc<ClientConfig> {
+    let root_store = RootCertStore::from_iter(TLS_SERVER_ROOTS.iter().cloned());
+    let mut config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    for proto in alpns {
+        config.alpn_protocols.push(proto.to_vec());
+    }
+    Arc::new(config)
+}
+
+pub(crate) fn tls_http_client_config() -> &'static Arc<ClientConfig> {
     static CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
-    CLIENT_CONFIG.get_or_init(|| {
-        let root_store = RootCertStore::from_iter(TLS_SERVER_ROOTS.iter().cloned());
-        Arc::new(
-            ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth(),
-        )
-    })
+    CLIENT_CONFIG.get_or_init(|| build_client_config(&[b"h2", b"http/1.1"]))
+}
+
+pub(crate) fn tls_ws_client_config() -> &'static Arc<ClientConfig> {
+    static CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    CLIENT_CONFIG.get_or_init(|| build_client_config(&[b"http/1.1"]))
 }
 
 pub(crate) fn is_plain_tcp<S: 'static>() -> bool {
