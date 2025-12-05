@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Builder;
 use tokio::task;
 use tokio_rustls::{TlsAcceptor, TlsStream};
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::packet::SocketInfo;
 
@@ -74,7 +74,12 @@ pub fn run_port443(state: InspectorRegistry, mitm_state: TlsMitmState) -> std::i
                     let tls_stream = match tls_acceptor.accept(stream).await {
                         Ok(tls_stream) => tls_stream,
                         Err(err) => {
-                            eprintln!("failed to perform tls handshake: {err:#}");
+                            // TODO: how to log SNI info?
+                            error!(
+                                client = %sockinfo.client_addr,
+                                server = %sockinfo.server_addr,
+                                "failed to perform tls handshake: {err:#}"
+                            );
                             return;
                         }
                     };
