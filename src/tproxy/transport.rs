@@ -1,7 +1,7 @@
 use std::any::TypeId;
 use std::sync::{Arc, OnceLock};
 
-use hyper::{Request, Uri};
+use hyper::Request;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
 use tokio::net::TcpStream;
@@ -28,17 +28,17 @@ pub(crate) fn normalize_host(host: &str) -> String {
         .unwrap_or_else(|| host.to_string())
 }
 
-pub(crate) fn host_from_request<B>(req: &Request<B>, default: &str) -> String {
+pub(crate) fn authority_from_request<B>(req: &Request<B>, default: &str) -> String {
     if let Some(authority) = req.uri().authority() {
         return authority.as_str().to_string();
     }
 
-    if let Some(host) = req.uri().host() {
+    if let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok()) {
         return host.to_string();
     }
 
-    if let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok()) {
-        return normalize_host(host);
+    if let Some(host) = req.uri().host() {
+        return host.to_string();
     }
 
     default.to_string()
@@ -48,20 +48,10 @@ pub(crate) fn server_name_from_req<B>(
     req: &Request<B>,
     sockinfo: &SocketInfo,
 ) -> std::io::Result<ServerName<'static>> {
-    let host = host_from_request(req, &sockinfo.server_addr.ip().to_string());
+    let authority = authority_from_request(req, &sockinfo.server_addr.ip().to_string());
+    let host = normalize_host(&authority);
     host.try_into()
         .map_err(|_| std::io::Error::other("invalid server name for TLS upstream"))
-}
-
-pub(crate) fn build_upstream_uri<B>(req: &Request<B>, scheme: &str, default_host: &str) -> Uri {
-    let host = host_from_request(req, default_host);
-    let path = req
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-    let uri = format!("{scheme}{host}{path}");
-    uri.parse().unwrap_or_else(|_| Uri::from_static("/"))
 }
 
 fn build_client_config(alpns: &[&[u8]]) -> Arc<ClientConfig> {

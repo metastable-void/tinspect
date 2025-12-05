@@ -4,7 +4,8 @@ use bytes::BytesMut;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::ext::Protocol;
-use hyper::{Method, Request, Response, StatusCode, Version};
+use hyper::header::{HOST, HeaderValue};
+use hyper::{Method, Request, Response, StatusCode, Uri, Version};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -16,7 +17,7 @@ use crate::packet::SocketInfo;
 
 use super::context::{HttpContext, InspectorRegistry};
 use super::transport::{
-    UpstreamTransport, build_upstream_uri, is_plain_tcp, is_tls_stream, server_name_from_req,
+    UpstreamTransport, authority_from_request, is_plain_tcp, is_tls_stream, server_name_from_req,
     tls_http_client_config,
 };
 use super::ws::{h2_ws_handshake_response, handle_ws, is_ws_upgrade, ws_handshake_response};
@@ -210,12 +211,28 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let empty_req_for_request = Arc::new(empty_req_ws);
     let http_ctx_req = HttpContext::new(is_tls, sockinfo, empty_req_for_request.clone());
 
-    let req = match state.process_http_request(req, http_ctx_req) {
+    let mut req = match state.process_http_request(req, http_ctx_req) {
         Err(res) => return Ok(res),
         Ok(req) => req,
     };
 
-    let (mut req, empty_req_after) = req_into_empty(req);
+    let default_authority = sockinfo.server_addr.to_string();
+    let authority = authority_from_request(&req, &default_authority);
+    if req.headers().get(HOST).is_none() {
+        if let Ok(value) = HeaderValue::from_str(&authority) {
+            req.headers_mut().insert(HOST, value);
+        }
+    }
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| "/".to_string());
+    *req.uri_mut() = path
+        .parse::<Uri>()
+        .unwrap_or_else(|_| Uri::from_static("/"));
+
+    let (req, empty_req_after) = req_into_empty(req);
     let empty_req = Arc::new(empty_req_after);
 
     let http_ctx_resp = HttpContext::new(is_tls, sockinfo, empty_req.clone());
@@ -245,14 +262,6 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         }
         Ok(c) => c,
     };
-
-    let scheme = match upstream_transport {
-        UpstreamTransport::Tls(_) => "https://",
-        UpstreamTransport::Plain => "http://",
-    };
-    let default_host = sockinfo.server_addr.to_string();
-    let upstream_uri = build_upstream_uri(empty_req.as_ref(), scheme, &default_host);
-    *req.uri_mut() = upstream_uri;
 
     let res = match client.send_request(req).await {
         Err(_e) => {

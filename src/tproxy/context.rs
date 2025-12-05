@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::transport::host_from_request;
+use super::transport::authority_from_request;
 
 use crate::inspect::{
     DnsAnswer, DnsInspector, DnsQuestion, EmptyRequest, FullRequest, FullResponse, HttpInspector,
@@ -118,7 +118,7 @@ impl HttpContext {
 
     pub fn get_url(&self) -> String {
         let default_host = self.sockinfo.server_addr.to_string();
-        let host = host_from_request(self.req.as_ref(), &default_host);
+        let host = authority_from_request(self.req.as_ref(), &default_host);
         let scheme = if self.is_tls { "https://" } else { "http://" };
 
         let path = self
@@ -174,7 +174,7 @@ impl WebSocketContext {
 
     pub fn get_url(&self) -> String {
         let default_host = self.sockinfo.server_addr.to_string();
-        let host = host_from_request(self.upgrade_req.as_ref(), &default_host);
+        let host = authority_from_request(self.upgrade_req.as_ref(), &default_host);
         let scheme = if self.is_tls { "wss://" } else { "ws://" };
 
         let path = self
