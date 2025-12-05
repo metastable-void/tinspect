@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::transport::host_from_request;
+
 use crate::inspect::{
     DnsAnswer, DnsInspector, DnsQuestion, EmptyRequest, FullRequest, FullResponse, HttpInspector,
     WebSocketInspector, WebSocketMessage,
@@ -115,18 +117,8 @@ impl HttpContext {
     }
 
     pub fn get_url(&self) -> String {
-        let host = self
-            .req
-            .headers()
-            .get("host")
-            .map(|v| v.to_str().ok())
-            .flatten()
-            .map(|v| v.to_owned())
-            .unwrap_or_else(|| {
-                let remote = self.sockinfo.server_addr;
-                remote.to_string()
-            });
-
+        let default_host = self.sockinfo.server_addr.to_string();
+        let host = host_from_request(self.req.as_ref(), &default_host);
         let scheme = if self.is_tls { "https://" } else { "http://" };
 
         let path = self
@@ -181,18 +173,8 @@ impl WebSocketContext {
     }
 
     pub fn get_url(&self) -> String {
-        let host = self
-            .upgrade_req
-            .headers()
-            .get("host")
-            .map(|v| v.to_str().ok())
-            .flatten()
-            .map(|v| v.to_owned())
-            .unwrap_or_else(|| {
-                let remote = self.sockinfo.server_addr;
-                remote.to_string()
-            });
-
+        let default_host = self.sockinfo.server_addr.to_string();
+        let host = host_from_request(self.upgrade_req.as_ref(), &default_host);
         let scheme = if self.is_tls { "wss://" } else { "ws://" };
 
         let path = self

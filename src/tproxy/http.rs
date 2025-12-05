@@ -16,7 +16,8 @@ use crate::packet::SocketInfo;
 
 use super::context::{HttpContext, InspectorRegistry};
 use super::transport::{
-    UpstreamTransport, is_plain_tcp, is_tls_stream, server_name_from_req, tls_http_client_config,
+    UpstreamTransport, build_upstream_uri, is_plain_tcp, is_tls_stream, server_name_from_req,
+    tls_http_client_config,
 };
 use super::ws::{h2_ws_handshake_response, handle_ws, is_ws_upgrade, ws_handshake_response};
 
@@ -214,13 +215,13 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         Ok(req) => req,
     };
 
-    let (req, empty_req_after) = req_into_empty(req);
+    let (mut req, empty_req_after) = req_into_empty(req);
     let empty_req = Arc::new(empty_req_after);
 
     let http_ctx_resp = HttpContext::new(is_tls, sockinfo, empty_req.clone());
 
-    let mut client = if is_tls {
-        let server_name = match server_name_from_req(empty_req.as_ref(), &sockinfo) {
+    let upstream_transport = if is_tls {
+        match server_name_from_req(empty_req.as_ref(), &sockinfo) {
             Err(_e) => {
                 let res = Response::builder()
                     .status(400)
@@ -228,31 +229,30 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     .unwrap();
                 return Ok(res);
             }
-            Ok(s) => s,
-        };
-
-        match build_client(sockinfo.server_addr, UpstreamTransport::Tls(server_name)).await {
-            Err(_e) => {
-                let res = Response::builder()
-                    .status(400)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap();
-                return Ok(res);
-            }
-            Ok(c) => c,
+            Ok(s) => UpstreamTransport::Tls(s),
         }
     } else {
-        match build_client(sockinfo.server_addr, UpstreamTransport::Plain).await {
-            Err(_e) => {
-                let res = Response::builder()
-                    .status(400)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap();
-                return Ok(res);
-            }
-            Ok(c) => c,
-        }
+        UpstreamTransport::Plain
     };
+
+    let mut client = match build_client(sockinfo.server_addr, upstream_transport.clone()).await {
+        Err(_e) => {
+            let res = Response::builder()
+                .status(400)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            return Ok(res);
+        }
+        Ok(c) => c,
+    };
+
+    let scheme = match upstream_transport {
+        UpstreamTransport::Tls(_) => "https://",
+        UpstreamTransport::Plain => "http://",
+    };
+    let default_host = sockinfo.server_addr.to_string();
+    let upstream_uri = build_upstream_uri(empty_req.as_ref(), scheme, &default_host);
+    *req.uri_mut() = upstream_uri;
 
     let res = match client.send_request(req).await {
         Err(_e) => {
