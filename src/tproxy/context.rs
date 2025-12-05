@@ -1,14 +1,19 @@
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 use tokio::sync::mpsc::UnboundedSender;
-
-use super::transport::authority_from_request;
 
 use crate::inspect::{
     DnsAnswer, DnsInspector, DnsQuestion, EmptyRequest, FullRequest, FullResponse, HttpInspector,
     WebSocketInspector, WebSocketMessage,
 };
 use crate::packet::SocketInfo;
+use hyper::header::{HOST, HeaderValue};
+use hyper::{Uri, Version};
+
+use super::http::{UpstreamProtocol, build_client, res_into_full_bytes};
+use super::transport::{
+    UpstreamTransport, authority_from_request, canonical_host_header, server_name_from_req,
+};
 
 /// Shared inspector configuration used to run DNS/HTTP/WebSocket hooks.
 #[derive(Debug, Clone)]
@@ -136,6 +141,62 @@ impl HttpContext {
 
     pub fn method(&self) -> String {
         self.req.method().to_string()
+    }
+
+    /// Sends an arbitrary HTTP request to the same upstream destination that the
+    /// current context represents, returning the upstream response.
+    pub async fn send_upstream_request(&self, mut req: FullRequest) -> io::Result<FullResponse> {
+        let default_authority = self.sockinfo.server_addr.to_string();
+        let authority = authority_from_request(&req, &default_authority);
+        let scheme = if self.is_tls { "https" } else { "http" };
+        let host_header = canonical_host_header(&authority, scheme);
+        if let Ok(value) = HeaderValue::from_str(&host_header) {
+            req.headers_mut().insert(HOST, value);
+        }
+
+        let transport = if self.is_tls {
+            let server_name = server_name_from_req(&req, &self.sockinfo)?;
+            UpstreamTransport::Tls(server_name)
+        } else {
+            UpstreamTransport::Plain
+        };
+
+        let mut client = build_client(self.sockinfo.server_addr, transport).await?;
+
+        match client.protocol() {
+            UpstreamProtocol::Http1 => {
+                *req.version_mut() = Version::HTTP_11;
+                let path = req
+                    .uri()
+                    .path_and_query()
+                    .map(|pq| pq.as_str().to_string())
+                    .unwrap_or_else(|| "/".to_string());
+                *req.uri_mut() = path
+                    .parse::<Uri>()
+                    .unwrap_or_else(|_| Uri::from_static("/"));
+            }
+            UpstreamProtocol::Http2 => {
+                *req.version_mut() = Version::HTTP_2;
+                if req.uri().scheme().is_none() {
+                    let path = req
+                        .uri()
+                        .path_and_query()
+                        .map(|pq| pq.as_str())
+                        .unwrap_or("/");
+                    let absolute = format!("{scheme}://{authority}{path}");
+                    if let Ok(uri) = absolute.parse::<Uri>() {
+                        *req.uri_mut() = uri;
+                    }
+                }
+            }
+        }
+
+        let res = client
+            .send_request(req)
+            .await
+            .map_err(|e| io::Error::other(e))?;
+
+        res_into_full_bytes(res).await
     }
 }
 

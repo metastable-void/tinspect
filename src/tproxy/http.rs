@@ -25,25 +25,25 @@ use super::ws::{h2_ws_handshake_response, handle_ws, is_ws_upgrade, ws_handshake
 const BODY_SIZE_LIMIT: usize = 100 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UpstreamProtocol {
+pub(crate) enum UpstreamProtocol {
     Http1,
     Http2,
 }
 
-enum UpstreamClient {
+pub(crate) enum UpstreamClient {
     Http1(hyper::client::conn::http1::SendRequest<Full<Bytes>>),
     Http2(hyper::client::conn::http2::SendRequest<Full<Bytes>>),
 }
 
 impl UpstreamClient {
-    fn protocol(&self) -> UpstreamProtocol {
+    pub(crate) fn protocol(&self) -> UpstreamProtocol {
         match self {
             UpstreamClient::Http1(_) => UpstreamProtocol::Http1,
             UpstreamClient::Http2(_) => UpstreamProtocol::Http2,
         }
     }
 
-    async fn send_request(
+    pub(crate) async fn send_request(
         &mut self,
         req: Request<Full<Bytes>>,
     ) -> Result<Response<Incoming>, hyper::Error> {
@@ -67,7 +67,7 @@ fn is_h2_ws_connect<B>(req: &Request<B>) -> bool {
     }
 }
 
-async fn build_client(
+pub(crate) async fn build_client(
     remote_addr: std::net::SocketAddr,
     transport: UpstreamTransport,
 ) -> std::io::Result<UpstreamClient> {
