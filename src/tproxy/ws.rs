@@ -8,7 +8,7 @@ use hyper::Version;
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{CONNECTION, UPGRADE};
 use hyper::upgrade;
-use hyper::{Request, Response};
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use sha1::{Digest, Sha1};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -31,6 +31,8 @@ use super::transport::{
     UpstreamTransport, cast_ws_stream, is_plain_tcp, is_tls_stream, server_name_from_req,
     tls_client_config,
 };
+
+const WEBSOCKET_ACCEPT_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 fn host_for_req<B>(req: &Request<B>, sockinfo: &SocketInfo) -> String {
     if let Some(host) = req.uri().host() {
@@ -73,14 +75,7 @@ pub fn is_ws_upgrade<B>(req: &Request<B>) -> bool {
 }
 
 pub fn ws_handshake_response<B>(req: &Request<B>) -> Option<Response<Full<Bytes>>> {
-    const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-    let key = req.headers().get("Sec-WebSocket-Key")?.as_bytes();
-
-    let mut sha = Sha1::new();
-    sha.update(key);
-    sha.update(GUID.as_bytes());
-    let accept_val = BASE64.encode(sha.finalize());
+    let accept_val = websocket_accept_value(req)?;
 
     let resp = Response::builder()
         .status(101)
@@ -89,6 +84,25 @@ pub fn ws_handshake_response<B>(req: &Request<B>) -> Option<Response<Full<Bytes>
         .header("Sec-WebSocket-Accept", accept_val);
 
     Some(resp.body(Full::new(Bytes::new())).ok()?)
+}
+
+pub fn h2_ws_handshake_response<B>(req: &Request<B>) -> Option<Response<Full<Bytes>>> {
+    let accept_val = websocket_accept_value(req)?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Sec-WebSocket-Accept", accept_val)
+        .body(Full::new(Bytes::new()))
+        .ok()
+}
+
+fn websocket_accept_value<B>(req: &Request<B>) -> Option<String> {
+    let key = req.headers().get("Sec-WebSocket-Key")?.as_bytes();
+
+    let mut sha = Sha1::new();
+    sha.update(key);
+    sha.update(WEBSOCKET_ACCEPT_GUID.as_bytes());
+    Some(BASE64.encode(sha.finalize()))
 }
 
 pub async fn create_upstream_ws<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(

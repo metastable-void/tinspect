@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::task;
 use tokio_rustls::{TlsConnector, TlsStream};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::packet::SocketInfo;
 
@@ -18,7 +18,7 @@ use super::context::{HttpContext, InspectorRegistry};
 use super::transport::{
     UpstreamTransport, is_plain_tcp, is_tls_stream, server_name_from_req, tls_client_config,
 };
-use super::ws::{handle_ws, is_ws_upgrade, ws_handshake_response};
+use super::ws::{h2_ws_handshake_response, handle_ws, is_ws_upgrade, ws_handshake_response};
 
 const BODY_SIZE_LIMIT: usize = 100 * 1024 * 1024;
 
@@ -143,16 +143,23 @@ pub(crate) async fn handler<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     state: InspectorRegistry,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
     if is_h2_ws_connect(&req) {
-        warn!(
-            client = %sockinfo.client_addr,
-            server = %sockinfo.server_addr,
-            "HTTP/2 WebSocket CONNECT not yet implemented"
-        );
-        let res = Response::builder()
-            .status(StatusCode::NOT_IMPLEMENTED)
-            .body(Full::new(Bytes::new()))
-            .unwrap();
-        return Ok(res);
+        let resp = h2_ws_handshake_response(&req).unwrap_or_else(|| {
+            Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::new()))
+                .unwrap()
+        });
+
+        let ws_req = req;
+        let state_clone = state.clone();
+        let sockinfo_clone = sockinfo.clone();
+        task::spawn(async move {
+            if let Err(e) = handle_ws::<S>(ws_req, sockinfo_clone, state_clone).await {
+                tracing::error!("WS error: {e}");
+            }
+        });
+
+        return Ok(resp);
     }
 
     if is_ws_upgrade(&req) {
